@@ -13,6 +13,7 @@ class DataBus {
     this.connections = []
     this.fleets = []
     this.selectedPlanet = null
+    this.draggingPlanet = null
     this.gameState = 'menu'
     this.frame = 0
     this.winner = null

@@ -13,6 +13,9 @@ export default class Main {
     ]
     this.gameInfo = new GameInfo()
     this.touchStartPos = null
+    this.dragCurrentPos = null
+    this.lastTouchPos = null
+    this.swipingConnection = null
 
     this.bindInput()
     this.loop()
@@ -67,6 +70,7 @@ export default class Main {
       const x = touch.clientX
       const y = touch.clientY
       this.touchStartPos = { x, y }
+      this.lastTouchPos = { x, y }
 
       if (DataBus.gameState === 'menu') {
         if (this.gameInfo.isInMenuBtn(x, y)) {
@@ -82,46 +86,100 @@ export default class Main {
         return
       }
 
-      // 游戏中 - 检查点击了什么
-      // 优先检查连接线
-      for (let i = DataBus.connections.length - 1; i >= 0; i--) {
-        const conn = DataBus.connections[i]
-        if (conn.active && conn.faction === DataBus.FACTIONS.PLAYER && conn.containsPoint(x, y)) {
-          conn.disconnect()
+      // 检查是否按住了玩家星球（开始拖拽连接）
+      for (const planet of DataBus.planets) {
+        if (planet.containsPoint(x, y) && planet.faction === DataBus.FACTIONS.PLAYER) {
+          DataBus.draggingPlanet = planet
+          this.dragCurrentPos = { x, y }
           DataBus.selectedPlanet = null
           return
         }
       }
-
-      // 检查星球
-      for (const planet of DataBus.planets) {
-        if (planet.containsPoint(x, y)) {
-          if (planet.faction === DataBus.FACTIONS.PLAYER) {
-            if (DataBus.selectedPlanet === planet) {
-              DataBus.selectedPlanet = null
-            } else {
-              DataBus.selectedPlanet = planet
-            }
-          } else if (DataBus.selectedPlanet) {
-            // 尝试创建连接
-            this.tryCreateConnection(DataBus.selectedPlanet, planet)
-            DataBus.selectedPlanet = null
-          }
-          return
-        }
-      }
-
-      // 点击空白区域
-      DataBus.selectedPlanet = null
     })
 
     wx.onTouchMove((e) => {
-      // 可用于未来的拖拽功能
+      const touch = e.touches[0]
+      const x = touch.clientX
+      const y = touch.clientY
+
+      // 拖拽星球建立连接
+      if (DataBus.draggingPlanet) {
+        this.dragCurrentPos = { x, y }
+        this.lastTouchPos = { x, y }
+        return
+      }
+
+      // 任意位置滑动：检测是否跨越了玩家连接线
+      if (this.lastTouchPos) {
+        for (let i = DataBus.connections.length - 1; i >= 0; i--) {
+          const conn = DataBus.connections[i]
+          if (conn.active && conn.faction === DataBus.FACTIONS.PLAYER) {
+            if (this.checkLineCrossed(conn, this.lastTouchPos.x, this.lastTouchPos.y, x, y)) {
+              conn.disconnect()
+            }
+          }
+        }
+      }
+
+      this.lastTouchPos = { x, y }
     })
 
     wx.onTouchEnd((e) => {
+      if (DataBus.draggingPlanet && this.dragCurrentPos) {
+        const endTouch = e.changedTouches[0]
+        const endX = endTouch.clientX
+        const endY = endTouch.clientY
+        
+        for (const planet of DataBus.planets) {
+          if (planet.containsPoint(endX, endY) && planet !== DataBus.draggingPlanet) {
+            this.tryCreateConnection(DataBus.draggingPlanet, planet)
+            break
+          }
+        }
+      }
+      
+      DataBus.draggingPlanet = null
+      this.dragCurrentPos = null
       this.touchStartPos = null
+      this.lastTouchPos = null
     })
+  }
+
+  /**
+   * 检测手指移动路径是否跨越了连接线
+   */
+  checkLineCrossed(conn, lastX, lastY, currX, currY) {
+    const sx = conn.source.x
+    const sy = conn.source.y
+    const tx = conn.target.x
+    const ty = conn.target.y
+
+    // 连接线方向向量
+    const dx = tx - sx
+    const dy = ty - sy
+    const len2 = dx * dx + dy * dy
+    if (len2 === 0) return false
+
+    // 上一帧和当前帧相对于连接线起点的向量
+    const lvx = lastX - sx
+    const lvy = lastY - sy
+    const cvx = currX - sx
+    const cvy = currY - sy
+
+    // 叉积：判断在连接线的哪一侧
+    const lastCross = dx * lvy - dy * lvx
+    const currCross = dx * cvy - dy * cvx
+
+    // 叉积符号不同说明跨线
+    if (lastCross * currCross >= 0) return false
+
+    // 投影到连接线上的参数，确保跨线发生在线段范围内
+    const lastT = (lvx * dx + lvy * dy) / len2
+    const currT = (cvx * dx + cvy * dy) / len2
+
+    // 至少有一点在线段范围内（考虑一定余量）
+    const buildEnd = conn.building ? conn.buildProgress : 1
+    return (lastT >= -0.05 && lastT <= buildEnd + 0.05) || (currT >= -0.05 && currT <= buildEnd + 0.05)
   }
 
   tryCreateConnection(source, target) {
@@ -237,9 +295,9 @@ export default class Main {
       return
     }
 
-    // 选中星球的连接范围指示
-    if (DataBus.selectedPlanet && DataBus.gameState === 'playing') {
-      const sp = DataBus.selectedPlanet
+    // 拖拽星球的连接范围指示
+    if (DataBus.draggingPlanet && DataBus.gameState === 'playing') {
+      const sp = DataBus.draggingPlanet
       ctx.beginPath()
       ctx.arc(sp.x, sp.y, DataBus.CONNECTION_MAX_DISTANCE, 0, Math.PI * 2)
       ctx.strokeStyle = 'rgba(74,158,255,0.12)'
@@ -254,6 +312,33 @@ export default class Main {
       conn.render(ctx)
     }
 
+    // 渲染拖拽时的临时连接线
+    if (DataBus.draggingPlanet && this.dragCurrentPos && DataBus.gameState === 'playing') {
+      ctx.save()
+      ctx.beginPath()
+      ctx.moveTo(DataBus.draggingPlanet.x, DataBus.draggingPlanet.y)
+      ctx.lineTo(this.dragCurrentPos.x, this.dragCurrentPos.y)
+      ctx.strokeStyle = 'rgba(74,158,255,0.6)'
+      ctx.lineWidth = 2
+      ctx.setLineDash([5, 3])
+      ctx.stroke()
+      ctx.setLineDash([])
+      
+      // 绘制起点圆点
+      ctx.beginPath()
+      ctx.arc(DataBus.draggingPlanet.x, DataBus.draggingPlanet.y, 8, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(74,158,255,0.8)'
+      ctx.fill()
+      
+      // 绘制终点圆点
+      ctx.beginPath()
+      ctx.arc(this.dragCurrentPos.x, this.dragCurrentPos.y, 6, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255,255,255,0.7)'
+      ctx.fill()
+      
+      ctx.restore()
+    }
+
     // 渲染舰队
     for (const fleet of DataBus.fleets) {
       fleet.render(ctx)
@@ -264,13 +349,13 @@ export default class Main {
       planet.render(ctx)
     }
 
-    // 渲染选中指示器
-    if (DataBus.selectedPlanet) {
-      const p = DataBus.selectedPlanet
+    // 渲染拖拽星球的指示器
+    if (DataBus.draggingPlanet) {
+      const p = DataBus.draggingPlanet
       ctx.save()
       ctx.beginPath()
-      ctx.arc(p.x, p.y, p.radius + 10, 0, Math.PI * 2)
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)'
+      ctx.arc(p.x, p.y, p.radius + 8, 0, Math.PI * 2)
+      ctx.strokeStyle = 'rgba(74,158,255,0.8)'
       ctx.lineWidth = 2
       ctx.setLineDash([3, 5])
       const dashOffset = DataBus.frame * 0.5

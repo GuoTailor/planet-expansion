@@ -112,15 +112,15 @@ export default class GameInfo {
     ctx.fillStyle = '#889999'
     ctx.fillText(`${min}:${sec.toString().padStart(2, '0')}`, SCREEN_WIDTH - 15, 20)
 
-    // 选中星球提示
-    if (DataBus.selectedPlanet) {
-      const p = DataBus.selectedPlanet
+    // 拖拽星球提示
+    if (DataBus.draggingPlanet) {
+      const p = DataBus.draggingPlanet
       ctx.font = '11px Arial'
       ctx.textAlign = 'center'
       ctx.fillStyle = '#ffffff88'
-      ctx.fillText(`已选: ${DataBus.FACTION_NAMES[p.faction]}星球 [${p.civilization}]`, p.x, p.y - p.radius - 20)
+      ctx.fillText(`拖拽中: ${DataBus.FACTION_NAMES[p.faction]}星球 [${p.civilization}]`, p.x, p.y - p.radius - 20)
       ctx.fillStyle = '#ffffff44'
-      ctx.fillText('点击目标星球建立连接 / 点击连接线断开', p.x, p.y - p.radius - 8)
+      ctx.fillText('拖拽到目标星球建立连接', p.x, p.y - p.radius - 8)
     }
   }
 
