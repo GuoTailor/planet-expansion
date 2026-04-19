@@ -1,5 +1,3 @@
-import { Vec2 } from 'cc';
-
 // ===================== 派别枚举 =====================
 export enum Faction {
     PLAYER = 0,
@@ -12,21 +10,30 @@ export interface PlanetConfig {
     x: number;
     y: number;
     faction: Faction;
+    // 人口
     population: number;
+    // 最大人口
     maxPopulation: number;
+    // 人口增长率
     growRate?: number;
 }
 
 // ===================== 关卡配置 =====================
 export interface LevelData {
+    // 关卡ID
     id: number;
+    // 关卡名称
     name: string;
+    // 关卡描述
     description: string;
+    // 星球列表
     planets: PlanetConfig[];
+    // AI刷新间隔
     aiInterval: number;
+    // 攻击间隔
     attackInterval: number;
+    // 发送比例
     sendRatio: number;
-    maxConnectionDistance: number;
     difficulty: number; // 1-5 难度等级
 }
 
@@ -40,7 +47,6 @@ export const LEVELS: LevelData[] = [
         aiInterval: 5.0,
         attackInterval: 1.4,
         sendRatio: 0.2,
-        maxConnectionDistance: 400,
         planets: [
             { x: -420, y: -120, faction: Faction.PLAYER, population: 35, maxPopulation: 70, growRate: 1.5 },
             { x: -280, y: 120, faction: Faction.PLAYER, population: 25, maxPopulation: 45, growRate: 1.5 },
@@ -59,7 +65,6 @@ export const LEVELS: LevelData[] = [
         aiInterval: 4.0,
         attackInterval: 1.2,
         sendRatio: 0.25,
-        maxConnectionDistance: 380,
         planets: [
             { x: -450, y: -100, faction: Faction.PLAYER, population: 35, maxPopulation: 70, growRate: 1.5 },
             { x: -300, y: 150, faction: Faction.PLAYER, population: 25, maxPopulation: 45, growRate: 1.5 },
@@ -79,7 +84,6 @@ export const LEVELS: LevelData[] = [
         aiInterval: 3.5,
         attackInterval: 1.1,
         sendRatio: 0.25,
-        maxConnectionDistance: 340,
         planets: [
             { x: -400, y: -80, faction: Faction.PLAYER, population: 30, maxPopulation: 60, growRate: 1.5 },
             { x: -260, y: 100, faction: Faction.PLAYER, population: 22, maxPopulation: 40, growRate: 1.5 },
@@ -101,7 +105,6 @@ export const LEVELS: LevelData[] = [
         aiInterval: 3.0,
         attackInterval: 1.0,
         sendRatio: 0.28,
-        maxConnectionDistance: 360,
         planets: [
             { x: -440, y: 0, faction: Faction.PLAYER, population: 30, maxPopulation: 60, growRate: 1.5 },
             { x: -340, y: 160, faction: Faction.PLAYER, population: 20, maxPopulation: 38, growRate: 1.5 },
@@ -124,7 +127,6 @@ export const LEVELS: LevelData[] = [
         aiInterval: 2.5,
         attackInterval: 0.9,
         sendRatio: 0.3,
-        maxConnectionDistance: 330,
         planets: [
             { x: -450, y: 0, faction: Faction.PLAYER, population: 28, maxPopulation: 55, growRate: 1.5 },
             { x: -320, y: 180, faction: Faction.PLAYER, population: 18, maxPopulation: 35, growRate: 1.5 },

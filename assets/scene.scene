@@ -11,7 +11,7 @@
   },
   {
     "__type__": "cc.Scene",
-    "_name": "scene-2d",
+    "_name": "scene",
     "_objFlags": 0,
     "__editorExtras__": {},
     "_parent": null,
@@ -52,7 +52,7 @@
     },
     "autoReleaseAssets": false,
     "_globals": {
-      "__id__": 8
+      "__id__": 10
     },
     "_id": "d85fd57b-4059-471c-8c77-6dbad7e8be23"
   },
@@ -79,13 +79,19 @@
       },
       {
         "__id__": 7
+      },
+      {
+        "__id__": 8
+      },
+      {
+        "__id__": 9
       }
     ],
     "_prefab": null,
     "_lpos": {
       "__type__": "cc.Vec3",
       "x": 640,
-      "y": 360.00000000000006,
+      "y": 360,
       "z": 0
     },
     "_lrot": {
@@ -170,7 +176,7 @@
     "_priority": 0,
     "_fov": 45,
     "_fovAxis": 0,
-    "_orthoHeight": 360,
+    "_orthoHeight": 498.9830508474576,
     "_near": 0,
     "_far": 2000,
     "_color": {
@@ -271,30 +277,54 @@
     "_id": "5doy5N6uJEbbeA7L/EWJe0"
   },
   {
+    "__type__": "a1b2cPU5fZ4kKvN7xI0VniQ",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 2
+    },
+    "_enabled": true,
+    "__prefab": null,
+    "_id": "91mfKoV+tDaLdGdGHZJflV"
+  },
+  {
+    "__type__": "1f7a3rEuDtOf4izkW0yDXqv",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 2
+    },
+    "_enabled": true,
+    "__prefab": null,
+    "_id": "c0BU5sDBJCko9DQ0K9Gz5b"
+  },
+  {
     "__type__": "cc.SceneGlobals",
     "ambient": {
-      "__id__": 9
-    },
-    "shadows": {
-      "__id__": 10
-    },
-    "_skybox": {
       "__id__": 11
     },
-    "fog": {
+    "shadows": {
       "__id__": 12
     },
-    "octree": {
+    "_skybox": {
       "__id__": 13
     },
-    "skin": {
+    "fog": {
       "__id__": 14
     },
-    "lightProbeInfo": {
+    "octree": {
       "__id__": 15
     },
-    "postSettings": {
+    "skin": {
       "__id__": 16
+    },
+    "lightProbeInfo": {
+      "__id__": 17
+    },
+    "postSettings": {
+      "__id__": 18
     },
     "bakedWithStationaryMainLight": false,
     "bakedWithHighpLightmap": false
@@ -432,7 +462,6 @@
   },
   {
     "__type__": "cc.LightProbeInfo",
-    "_id": "cc.LightProbeInfo",
     "_giScale": 1,
     "_giSamples": 1024,
     "_bounces": 2,

@@ -1,6 +1,23 @@
-import { _decorator, Component, Node, UITransform, Graphics, Color, Vec2, Label, EventTouch, Input, Size, find, director, game, Canvas } from 'cc';
-import { Faction, GameState, LevelData, LEVELS, PlanetConfig } from './LevelConfig';
-const { ccclass, property } = _decorator;
+import {
+    _decorator,
+    Canvas,
+    Color,
+    Component,
+    director,
+    EventTouch,
+    find,
+    Graphics,
+    Input,
+    Label,
+    Node,
+    Size,
+    UITransform,
+    Vec2
+} from 'cc';
+import {Faction, GameState, LevelData} from './LevelConfig';
+import {MenuScene} from "./MenuScene";
+
+const {ccclass, property} = _decorator;
 
 // ===================== 派别颜色 =====================
 const FACTION_COLORS: Record<number, Color> = {
@@ -50,10 +67,19 @@ export class ConnectionData {
     toPlanetId: number = 0;
     faction: Faction = Faction.NEUTRAL;
     cost: number = 0;
+    paidCost: number = 0;
     progress: number = 0;
     speed: number = 0.4;
+    // 是否到达目的地
     reached: boolean = false;
     active: boolean = true;
+    retracting: boolean = false;
+    // 双向缩回：从末端向fromPlanet方向缩回
+    retractFromEnd: boolean = false;
+    retractProgressFromEnd: number = 0;
+    // 缩回时返还资源的目标星球ID和待返还量
+    retractRefundPlanetId: number = 0;
+    retractRefundCost: number = 0;
     node: Node | null = null;
     pulseTime: number = 0;
 }
@@ -85,7 +111,6 @@ export class GameManager extends Component {
 
     // ==================== 游戏配置（从关卡数据覆盖） ====================
     private CONNECTION_COST_PER_UNIT = 0.1;
-    private MAX_CONNECTION_DISTANCE = 380;
     private ATTACK_INTERVAL = 1.2;
     private GROW_INTERVAL = 0.5;
     private ATTACK_DAMAGE_RATIO = 1.0;
@@ -198,7 +223,6 @@ export class GameManager extends Component {
         GameState.currentLevel = levelId;
 
         // 应用关卡配置
-        this.MAX_CONNECTION_DISTANCE = levelData.maxConnectionDistance;
         this.ATTACK_INTERVAL = levelData.attackInterval;
         this.SEND_RATIO = levelData.sendRatio;
         this.AI_INTERVAL = levelData.aiInterval;
@@ -690,15 +714,17 @@ export class GameManager extends Component {
 
                 const dist = Vec2.distance(this.selectedPlanet.pos, pos);
 
-                if (dist <= this.MAX_CONNECTION_DISTANCE) {
-                    const cost = Math.floor(dist * this.CONNECTION_COST_PER_UNIT);
-                    const canAfford = this.selectedPlanet.population > cost + 2;
+                const cost = dist * this.CONNECTION_COST_PER_UNIT;
+                const canAfford = this.selectedPlanet.population > cost + 2;
+                const canStart = this.selectedPlanet.population > 1;
+                if (!canStart) {
+                    this.dragLineGraphics.strokeColor = new Color(255, 50, 50, 120);
+                } else {
                     this.dragLineGraphics.strokeColor = canAfford
                         ? new Color(80, 180, 255, 180)
                         : new Color(255, 160, 50, 180);
-                } else {
-                    this.dragLineGraphics.strokeColor = new Color(255, 50, 50, 120);
                 }
+
 
                 this.dragLineGraphics.lineWidth = 3;
                 this.dragLineGraphics.moveTo(this.selectedPlanet.pos.x, this.selectedPlanet.pos.y);
@@ -739,7 +765,7 @@ export class GameManager extends Component {
                     this.dragLineGraphics.fill();
                 }
 
-                const toBreakNow: ConnectionData[] = [];
+                const toBreakNow: { conn: ConnectionData; cutPos: Vec2 }[] = [];
                 for (const conn of this.connections) {
                     if (!conn.active) continue;
                     if (this.swipeCutCooldowns.has(conn.id)) continue;
@@ -753,19 +779,18 @@ export class GameManager extends Component {
 
                     if (dist <= this.SWIPE_CUT_DISTANCE) {
                         if (conn.faction === Faction.PLAYER) {
-                            toBreakNow.push(conn);
-                            const closest = this.closestPointOnSegment(
+                            const cutPoint = this.closestPointOnSegment(
                                 this.closestPointOnSegment(pos, fromPlanet.pos, toPlanet.pos),
                                 this.swipePrevPos, pos
                             );
-                            this.drawCutMark(this.dragLineGraphics, closest.x, closest.y);
+                            toBreakNow.push({ conn, cutPos: cutPoint });
                         }
                     }
                 }
 
-                for (const conn of toBreakNow) {
-                    this.breakConnection(conn);
-                    this.swipeCutCooldowns.set(conn.id, 0.3);
+                for (const item of toBreakNow) {
+                    this.breakConnection(item.conn, item.cutPos);
+                    this.swipeCutCooldowns.set(item.conn.id, 0.3);
                 }
                 if (toBreakNow.length > 0) {
                     this.setStatus(`滑动切割！断开了 ${toBreakNow.length} 条连接`);
@@ -808,11 +833,6 @@ export class GameManager extends Component {
     private tryCreateConnection(from: PlanetData, to: PlanetData) {
         const dist = Vec2.distance(from.pos, to.pos);
 
-        if (dist > this.MAX_CONNECTION_DISTANCE) {
-            this.setStatus('距离太远，无法建立连接！');
-            return;
-        }
-
         const existing = this.connections.find(
             c => c.fromPlanetId === from.id && c.toPlanetId === to.id && c.active
         );
@@ -821,15 +841,23 @@ export class GameManager extends Component {
             return;
         }
 
-        const cost = Math.floor(dist * this.CONNECTION_COST_PER_UNIT);
-
-        if (from.population <= cost + 2) {
-            this.setStatus('文明数量不足，无法建立连接！');
-            return;
+        // 同阵营反向连接检测：若存在 A→B 的同阵营连接，当 B→A 发起时，启动 A→B 缩回动画并按比例动态返还资源
+        if (from.faction === to.faction) {
+            const reverseConn = this.connections.find(
+                c => c.fromPlanetId === to.id && c.toPlanetId === from.id && c.active && c.faction === from.faction
+            );
+            if (reverseConn) {
+                this.retractConnection(reverseConn);
+                this.setStatus(`同阵营反向连接缩回中，资源按比例返还！`);
+            }
         }
 
-        from.population -= cost;
-        this.updatePlanetDisplay(from, this.totalTime);
+        const cost = dist * this.CONNECTION_COST_PER_UNIT;
+
+        if (from.population <= 1) {
+            this.setStatus('文明数量为零，无法建立连接！');
+            return;
+        }
 
         const conn = new ConnectionData();
         conn.id = this.nextConnectionId++;
@@ -837,6 +865,7 @@ export class GameManager extends Component {
         conn.toPlanetId = to.id;
         conn.faction = from.faction;
         conn.cost = cost;
+        conn.paidCost = 0;
         conn.progress = 0;
         conn.reached = false;
         conn.active = true;
@@ -844,7 +873,11 @@ export class GameManager extends Component {
         this.createConnectionNode(conn);
         this.connections.push(conn);
 
-        this.setStatus(`连接建立！消耗文明: ${cost}`);
+        if (from.population <= cost + 2) {
+            this.setStatus(`连接建立！文明不足，连接可能中途中断（需 ${Math.floor(cost)}）`);
+        } else {
+            this.setStatus(`连接建立！预计消耗文明: ${Math.floor(cost)}`);
+        }
     }
 
     // ==================== 创建连接节点 ====================
@@ -864,8 +897,51 @@ export class GameManager extends Component {
         const totalDist = dir.length();
         if (totalDist < 1) return;
 
-        const progressDist = conn.progress * totalDist;
         const normDir = dir.normalize();
+
+        if (conn.retracting && conn.retractFromEnd) {
+            // 双向缩回的末端段：从断开位置向 toPlanet 方向缩回
+            const startProgress = conn.progress; // 断开位置比例
+            const currentEnd = conn.retractProgressFromEnd; // 当前缩回到的位置比例
+            const startX = fromPlanet.pos.x + normDir.x * startProgress * totalDist;
+            const startY = fromPlanet.pos.y + normDir.y * startProgress * totalDist;
+            const endX = fromPlanet.pos.x + normDir.x * currentEnd * totalDist;
+            const endY = fromPlanet.pos.y + normDir.y * currentEnd * totalDist;
+
+            g.strokeColor = new Color(color.r, color.g, color.b, 40);
+            g.lineWidth = 6;
+            g.moveTo(startX, startY);
+            g.lineTo(endX, endY);
+            g.stroke();
+
+            g.strokeColor = new Color(color.r, color.g, color.b, 180);
+            g.lineWidth = 3;
+            g.moveTo(startX, startY);
+            g.lineTo(endX, endY);
+            g.stroke();
+
+            // 箭头指向 toPlanet 方向
+            const segDist = totalDist * (currentEnd - startProgress);
+            if (segDist > 25) {
+                const arrowSize = 10;
+                const angle = Math.atan2(normDir.y, normDir.x);
+                g.fillColor = new Color(color.r, color.g, color.b, 220);
+                g.moveTo(endX, endY);
+                g.lineTo(
+                    endX - arrowSize * Math.cos(angle - 0.35),
+                    endY - arrowSize * Math.sin(angle - 0.35)
+                );
+                g.lineTo(
+                    endX - arrowSize * Math.cos(angle + 0.35),
+                    endY - arrowSize * Math.sin(angle + 0.35)
+                );
+                g.close();
+                g.fill();
+            }
+            return;
+        }
+
+        const progressDist = conn.progress * totalDist;
 
         const endX = fromPlanet.pos.x + normDir.x * progressDist;
         const endY = fromPlanet.pos.y + normDir.y * progressDist;
@@ -875,7 +951,11 @@ export class GameManager extends Component {
             ? (0.5 + 0.5 * Math.sin(this.totalTime * 15)) * 255
             : 0;
 
-        if (isHighlighted) {
+        if (conn.retracting) {
+            // 缩回中的连接不加额外光晕，直接用阵营颜色绘制
+        }
+
+        if (isHighlighted && !conn.retracting) {
             g.strokeColor = new Color(255, 255, 100, flashAlpha * 0.4);
             g.lineWidth = 16;
             g.moveTo(fromPlanet.pos.x, fromPlanet.pos.y);
@@ -930,67 +1010,92 @@ export class GameManager extends Component {
         }
     }
 
-    // ==================== 断开连接 ====================
-    public breakConnection(conn: ConnectionData) {
+    // ==================== 撤回连接（启动缩回动画，按比例动态返还资源） ====================
+    private retractConnection(conn: ConnectionData) {
         if (!conn.active) return;
+        if (conn.retracting) return;
+        conn.retracting = true;
+        conn.retractFromEnd = false;
+        conn.retractProgressFromEnd = 0;
+        conn.retractRefundPlanetId = 0;
+        conn.retractRefundCost = 0;
+    }
+
+    // ==================== 断开连接 ====================
+    public breakConnection(conn: ConnectionData, cutPos?: Vec2) {
+        if (!conn.active) return;
+
+        // 已在缩回中的连接无需再处理
+        if (conn.retracting) return;
 
         const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
         const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
 
-        conn.active = false;
+        // 情况1：连接还在建立过程中（未到达）→ 单向缩回到 fromPlanet
+        if (!conn.reached) {
+            this.retractConnection(conn);
+            return;
+        }
 
+        // 情况2：连接已建立成功（已到达）→ 从断开位置分为两段，分别缩回
+
+        // 计算断开位置在连接上的比例（0=fromPlanet端, 1=toPlanet端）
+        let cutRatio = 0.5;
+        if (cutPos) {
+            const dir = new Vec2(toPlanet.pos.x - fromPlanet.pos.x, toPlanet.pos.y - fromPlanet.pos.y);
+            const lenSq = dir.lengthSqr();
+            if (lenSq > 0.001) {
+                const t = ((cutPos.x - fromPlanet.pos.x) * dir.x + (cutPos.y - fromPlanet.pos.y) * dir.y) / lenSq;
+                cutRatio = Math.max(0.05, Math.min(0.95, t));
+            }
+        }
+
+        // 先处理反向连接（若存在同阵营反向连接，一并缩回）
         const reverseConn = this.connections.find(
             c => c.fromPlanetId === conn.toPlanetId
                 && c.toPlanetId === conn.fromPlanetId
                 && c.active
+                && !c.retracting
         );
-
         if (reverseConn) {
-            fromPlanet.population += conn.cost;
-            this.updatePlanetDisplay(fromPlanet, this.totalTime);
-
-            if (reverseConn.reached) {
-                // 已到达 - 对方连接继续存在
-            } else {
-                const reverseFromPlanet = this.planets.find(p => p.id === reverseConn.fromPlanetId)!;
-                const remainingDist = Vec2.distance(reverseFromPlanet.pos, toPlanet.pos) * (1 - reverseConn.progress);
-                const extendCost = Math.floor(remainingDist * this.CONNECTION_COST_PER_UNIT);
-                if (reverseFromPlanet.population < extendCost + 2) {
-                    reverseFromPlanet.population += reverseConn.cost;
-                    this.updatePlanetDisplay(reverseFromPlanet, this.totalTime);
-                    reverseConn.active = false;
-                    if (reverseConn.node) reverseConn.node.destroy();
-                    this.connections = this.connections.filter(c => c !== reverseConn);
-                }
-            }
-        } else {
-            const progressRatio = conn.progress;
-            const returnRatio = 1 - progressRatio;
-            const returnCost = Math.floor(conn.cost * returnRatio);
-            fromPlanet.population += returnCost;
-            this.updatePlanetDisplay(fromPlanet, this.totalTime);
-
-            const attackCost = Math.floor(conn.cost * progressRatio);
-            if (attackCost > 0) {
-                if (toPlanet.faction === conn.faction) {
-                    toPlanet.population += attackCost;
-                    this.updatePlanetDisplay(toPlanet, this.totalTime);
-                } else {
-                    toPlanet.population -= attackCost;
-                    if (toPlanet.population <= 0) {
-                        toPlanet.population = 0;
-                        this.capturePlanet(toPlanet, conn.faction);
-                    }
-                    this.updatePlanetDisplay(toPlanet, this.totalTime);
-                }
-            }
+            this.retractConnection(reverseConn);
         }
 
-        if (conn.node) {
-            conn.node.destroy();
-        }
+        // 原连接不再继续发送攻击波
+        conn.reached = false;
 
-        this.connections = this.connections.filter(c => c !== conn);
+        // 按断开位置比例分配已支付资源
+        const fromRefund = conn.paidCost * cutRatio;
+        const toRefund = conn.paidCost - fromRefund;
+
+        // --- 缩回段1：从 fromPlanet 一端向 fromPlanet 缩回 ---
+        conn.retracting = true;
+        conn.retractFromEnd = false;
+        conn.paidCost = fromRefund;
+        conn.progress = cutRatio; // 从断开位置开始缩回
+
+        // --- 缩回段2：从断开位置向 toPlanet 缩回（创建新连接对象，保持原始星球方向） ---
+        const retractConn = new ConnectionData();
+        retractConn.id = this.nextConnectionId++;
+        retractConn.fromPlanetId = conn.fromPlanetId;
+        retractConn.toPlanetId = conn.toPlanetId;
+        retractConn.faction = conn.faction;
+        retractConn.cost = conn.cost * (1 - cutRatio);
+        retractConn.paidCost = toRefund;
+        retractConn.progress = cutRatio;
+        retractConn.speed = conn.speed;
+        retractConn.reached = false;
+        retractConn.active = true;
+        retractConn.retracting = true;
+        retractConn.retractFromEnd = true; // 从末端方向缩回
+        retractConn.retractProgressFromEnd = cutRatio;
+        retractConn.retractRefundPlanetId = toPlanet.id;
+        retractConn.retractRefundCost = toRefund;
+
+        this.createConnectionNode(retractConn);
+        this.connections.push(retractConn);
+
+        this.setStatus('连接断开，资源缩回返还中...');
     }
 
     // ==================== 占领星球 =====================
@@ -1058,12 +1163,99 @@ export class GameManager extends Component {
     }
 
     private updateConnections(dt: number) {
-        for (const conn of this.connections) {
-            if (!conn.active || conn.reached) continue;
+        for (let i = this.connections.length - 1; i >= 0; i--) {
+            const conn = this.connections[i];
+            if (!conn.active) continue;
+
+            // 缩回状态
+            if (conn.retracting) {
+                // 双向缩回的末端段：retractProgressFromEnd 递增向1，线段从断开位置向toPlanet缩短
+                if (conn.retractFromEnd) {
+                    const refundPlanet = this.planets.find(p => p.id === conn.retractRefundPlanetId);
+                    const startProgress = conn.progress; // 保存初始断开位置比例
+                    conn.retractProgressFromEnd += conn.speed * 2 * dt;
+                    if (conn.retractProgressFromEnd >= 1) {
+                        conn.retractProgressFromEnd = 1;
+                        // 缩回完成，返还剩余资源并清理
+                        if (refundPlanet && conn.retractRefundCost > 0) {
+                            refundPlanet.population += conn.retractRefundCost;
+                            conn.retractRefundCost = 0;
+                            this.updatePlanetDisplay(refundPlanet, this.totalTime);
+                        }
+                        conn.active = false;
+                        if (conn.node) conn.node.destroy();
+                        this.connections.splice(i, 1);
+                        continue;
+                    }
+                    // 按缩回进度比例动态返还资源：已缩回的比例 = (current - start) / (1 - start)
+                    if (refundPlanet && startProgress < 1) {
+                        const retractedRatio = (conn.retractProgressFromEnd - startProgress) / (1 - startProgress);
+                        const targetRetain = conn.retractRefundCost * (1 - retractedRatio);
+                        const refundAmount = conn.retractRefundCost - targetRetain;
+                        if (refundAmount > 0.01) {
+                            refundPlanet.population += refundAmount;
+                            conn.retractRefundCost -= refundAmount;
+                            this.updatePlanetDisplay(refundPlanet, this.totalTime);
+                        }
+                    }
+                    continue;
+                }
+
+                // 单向缩回 / 双向缩回的起始段：progress 递减，资源按比例返还给 fromPlanet
+                const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
+                conn.progress -= conn.speed * 2 * dt;
+                if (conn.progress <= 0) {
+                    conn.progress = 0;
+                    // 缩回完成，返还剩余已支付资源并清理
+                    if (fromPlanet && conn.paidCost > 0) {
+                        fromPlanet.population += conn.paidCost;
+                        conn.paidCost = 0;
+                        this.updatePlanetDisplay(fromPlanet, this.totalTime);
+                    }
+                    conn.active = false;
+                    if (conn.node) conn.node.destroy();
+                    this.connections.splice(i, 1);
+                    continue;
+                }
+                // 按当前进度计算应保留的已支付量，差额返还
+                if (fromPlanet) {
+                    const targetPaid = conn.cost * conn.progress;
+                    const refundAmount = conn.paidCost - targetPaid;
+                    if (refundAmount > 0) {
+                        const actualRefund = Math.min(refundAmount, conn.paidCost);
+                        fromPlanet.population += actualRefund;
+                        conn.paidCost -= actualRefund;
+                        this.updatePlanetDisplay(fromPlanet, this.totalTime);
+                    }
+                }
+                continue;
+            }
+
+            if (conn.reached) continue;
+
             conn.progress += conn.speed * dt;
             if (conn.progress >= 1) {
                 conn.progress = 1;
                 conn.reached = true;
+            }
+
+            // 按距离比例动态扣除资源
+            const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
+            if (fromPlanet) {
+                const targetPaid = conn.cost * conn.progress;
+                const deltaCost = targetPaid - conn.paidCost;
+                if (deltaCost > 0) {
+                    const actualDeduct = Math.min(deltaCost, fromPlanet.population - 1);
+                    if (actualDeduct > 0) {
+                        fromPlanet.population -= actualDeduct;
+                        conn.paidCost += actualDeduct;
+                        this.updatePlanetDisplay(fromPlanet, this.totalTime);
+                    } else {
+                        // 资源耗尽，进入缩回状态
+                        conn.retracting = true;
+                        this.setStatus('资源耗尽，连接缩回中...');
+                    }
+                }
             }
         }
     }
@@ -1222,14 +1414,13 @@ export class GameManager extends Component {
             for (const tp of this.planets) {
                 if (tp.id === ep.id) continue;
                 const dist = Vec2.distance(ep.pos, tp.pos);
-                if (dist > this.MAX_CONNECTION_DISTANCE) continue;
 
                 const exists = this.connections.find(
                     c => c.fromPlanetId === ep.id && c.toPlanetId === tp.id && c.active
                 );
                 if (exists) continue;
 
-                const cost = Math.floor(dist * this.CONNECTION_COST_PER_UNIT);
+                const cost = dist * this.CONNECTION_COST_PER_UNIT;
                 if (ep.population <= cost + 5) continue;
 
                 let score = 0;
@@ -1248,9 +1439,7 @@ export class GameManager extends Component {
 
             if (bestTarget) {
                 const dist = Vec2.distance(ep.pos, bestTarget.pos);
-                const cost = Math.floor(dist * this.CONNECTION_COST_PER_UNIT);
-
-                ep.population -= cost;
+                const cost = dist * this.CONNECTION_COST_PER_UNIT;
 
                 const conn = new ConnectionData();
                 conn.id = this.nextConnectionId++;
@@ -1258,6 +1447,7 @@ export class GameManager extends Component {
                 conn.toPlanetId = bestTarget.id;
                 conn.faction = Faction.ENEMY;
                 conn.cost = cost;
+                conn.paidCost = 0;
                 conn.progress = 0;
                 conn.reached = false;
                 conn.active = true;
