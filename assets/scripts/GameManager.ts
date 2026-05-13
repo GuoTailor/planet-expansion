@@ -80,6 +80,13 @@ export class ConnectionData {
     // 缩回时返还资源的目标星球ID和待返还量
     retractRefundPlanetId: number = 0;
     retractRefundCost: number = 0;
+    // 碰撞对峙：与敌对势力的反向连接碰撞，各自只占一半
+    collided: boolean = false;
+    collidedProgress: number = 0.5; // 碰撞后允许的最大进度（对峙位置）
+    // 对峙的配对连接ID
+    pairedConnId: number = -1;
+    // 被顶回的目标进度（渐变缩回，非瞬间跳转）
+    pushBackTarget: number = -1; // -1 表示未被顶回
     node: Node | null = null;
     pulseTime: number = 0;
 }
@@ -94,6 +101,10 @@ export class AttackWave {
     speed: number = 180;
     node: Node | null = null;
     done: boolean = false;
+    // 碰撞对峙攻击波：目标是对峙点而非敌方星球
+    isCollidedWave: boolean = false;
+    collidedTarget: Vec2 | null = null;
+    collidedConnId: number = -1;
 }
 
 // ===================== 星空背景粒子 =====================
@@ -852,6 +863,15 @@ export class GameManager extends Component {
             }
         }
 
+        // 敌对势力反向连接碰撞检测：若存在敌对势力的反向连接，触发碰撞对峙
+        const enemyReverseConn = this.connections.find(
+            c => c.fromPlanetId === to.id && c.toPlanetId === from.id
+                && c.active && !c.retracting
+                && c.faction !== from.faction
+                && c.faction !== Faction.NEUTRAL
+                && from.faction !== Faction.NEUTRAL
+        );
+
         const cost = dist * this.CONNECTION_COST_PER_UNIT;
 
         if (from.population <= 1) {
@@ -873,11 +893,31 @@ export class GameManager extends Component {
         this.createConnectionNode(conn);
         this.connections.push(conn);
 
-        if (from.population <= cost + 2) {
+        if (enemyReverseConn) {
+            this.handleHostileCollision(conn, enemyReverseConn);
+            this.setStatus(`敌对势力碰撞！两条连接形成对峙！`);
+        } else if (from.population <= cost + 2) {
             this.setStatus(`连接建立！文明不足，连接可能中途中断（需 ${Math.floor(cost)}）`);
         } else {
             this.setStatus(`连接建立！预计消耗文明: ${Math.floor(cost)}`);
         }
+    }
+
+    // ==================== 处理敌对碰撞对峙 ====================
+    private handleHostileCollision(newConn: ConnectionData, existingConn: ConnectionData) {
+        const collisionPoint = 0.5; // 中间点
+
+        // 将先发起的连接标记为被顶回，渐变缩回到中间点
+        existingConn.reached = false;
+        existingConn.pushBackTarget = collisionPoint;
+        existingConn.collided = true;
+        existingConn.collidedProgress = collisionPoint;
+        existingConn.pairedConnId = newConn.id;
+
+        // 新连接也只到中间点
+        newConn.collided = true;
+        newConn.collidedProgress = collisionPoint;
+        newConn.pairedConnId = existingConn.id;
     }
 
     // ==================== 创建连接节点 ====================
@@ -901,12 +941,12 @@ export class GameManager extends Component {
 
         if (conn.retracting && conn.retractFromEnd) {
             // 双向缩回的末端段：从断开位置向 toPlanet 方向缩回
-            const startProgress = conn.progress; // 断开位置比例
-            const currentEnd = conn.retractProgressFromEnd; // 当前缩回到的位置比例
-            const startX = fromPlanet.pos.x + normDir.x * startProgress * totalDist;
-            const startY = fromPlanet.pos.y + normDir.y * startProgress * totalDist;
-            const endX = fromPlanet.pos.x + normDir.x * currentEnd * totalDist;
-            const endY = fromPlanet.pos.y + normDir.y * currentEnd * totalDist;
+            // retractProgressFromEnd 从 cutRatio 递增到 1，线段从断开处缩短到 toPlanet
+            const currentStart = conn.retractProgressFromEnd; // 当前缩回起始位置比例（从cutRatio向1移动）
+            const startX = fromPlanet.pos.x + normDir.x * currentStart * totalDist;
+            const startY = fromPlanet.pos.y + normDir.y * currentStart * totalDist;
+            const endX = toPlanet.pos.x;
+            const endY = toPlanet.pos.y;
 
             g.strokeColor = new Color(color.r, color.g, color.b, 40);
             g.lineWidth = 6;
@@ -921,7 +961,7 @@ export class GameManager extends Component {
             g.stroke();
 
             // 箭头指向 toPlanet 方向
-            const segDist = totalDist * (currentEnd - startProgress);
+            const segDist = totalDist * (1 - currentStart);
             if (segDist > 25) {
                 const arrowSize = 10;
                 const angle = Math.atan2(normDir.y, normDir.x);
@@ -982,8 +1022,9 @@ export class GameManager extends Component {
 
         if (conn.reached) {
             const particleCount = 3;
+            const maxT = conn.collided ? conn.collidedProgress : 1;
             for (let i = 0; i < particleCount; i++) {
-                const t = ((this.totalTime * 0.8 + i / particleCount) % 1);
+                const t = ((this.totalTime * 0.8 + i / particleCount) % 1) * maxT;
                 const px = fromPlanet.pos.x + (toPlanet.pos.x - fromPlanet.pos.x) * t;
                 const py = fromPlanet.pos.y + (toPlanet.pos.y - fromPlanet.pos.y) * t;
                 g.fillColor = new Color(color.r, color.g, color.b, 200);
@@ -1008,6 +1049,30 @@ export class GameManager extends Component {
             g.close();
             g.fill();
         }
+
+        // 碰撞对峙末端标记：绘制碰撞光效
+        if (conn.collided && conn.reached) {
+            const pulseAlpha = 0.4 + 0.4 * Math.sin(this.totalTime * 5);
+            g.fillColor = new Color(255, 255, 200, pulseAlpha * 255);
+            g.circle(endX, endY, 6);
+            g.fill();
+
+            g.strokeColor = new Color(255, 200, 100, pulseAlpha * 200);
+            g.lineWidth = 1.5;
+            g.circle(endX, endY, 8 + Math.sin(this.totalTime * 3) * 2);
+            g.stroke();
+
+            // 碰撞火花粒子
+            for (let i = 0; i < 3; i++) {
+                const sparkAngle = this.totalTime * 4 + i * Math.PI * 2 / 3;
+                const sparkDist = 10 + Math.sin(this.totalTime * 6 + i) * 4;
+                const sparkX = endX + Math.cos(sparkAngle) * sparkDist;
+                const sparkY = endY + Math.sin(sparkAngle) * sparkDist;
+                g.fillColor = new Color(255, 220, 100, 150 + Math.sin(this.totalTime * 8 + i) * 100);
+                g.circle(sparkX, sparkY, 1.5);
+                g.fill();
+            }
+        }
     }
 
     // ==================== 撤回连接（启动缩回动画，按比例动态返还资源） ====================
@@ -1019,6 +1084,44 @@ export class GameManager extends Component {
         conn.retractProgressFromEnd = 0;
         conn.retractRefundPlanetId = 0;
         conn.retractRefundCost = 0;
+
+        // 如果该连接处于碰撞对峙状态，恢复配对连接为正常连接
+        if (conn.collided && conn.pairedConnId >= 0) {
+            const pairedConn = this.connections.find(c => c.id === conn.pairedConnId && c.active);
+            if (pairedConn) {
+                pairedConn.collided = false;
+                pairedConn.collidedProgress = 1;
+                pairedConn.pairedConnId = -1;
+                pairedConn.pushBackTarget = -1;
+                // 如果配对连接已经到达对峙点，需要重新设置reached状态让它可以继续延伸
+                if (pairedConn.reached && pairedConn.progress < 1) {
+                    pairedConn.reached = false;
+                }
+            }
+        }
+        conn.collided = false;
+        conn.pairedConnId = -1;
+        conn.pushBackTarget = -1;
+
+        // 清除该连接已发出但未到达的攻击波
+        this.removeAttackWavesForConnection(conn);
+    }
+
+    // ==================== 清除连接相关的攻击波 ====================
+    private removeAttackWavesForConnection(conn: ConnectionData) {
+        for (let i = this.attackWaves.length - 1; i >= 0; i--) {
+            const wave = this.attackWaves[i];
+            if (wave.done) continue;
+            // 匹配同方向、同阵营的攻击波（普通攻击波或碰撞对峙攻击波）
+            if (wave.fromPlanetId === conn.fromPlanetId
+                && wave.toPlanetId === conn.toPlanetId
+                && wave.faction === conn.faction) {
+                // 对碰撞对峙攻击波，还需匹配连接ID
+                if (wave.isCollidedWave && wave.collidedConnId !== conn.id) continue;
+                wave.done = true;
+                if (wave.node) wave.node.destroy();
+            }
+        }
     }
 
     // ==================== 断开连接 ====================
@@ -1027,6 +1130,23 @@ export class GameManager extends Component {
 
         // 已在缩回中的连接无需再处理
         if (conn.retracting) return;
+
+        // 碰撞对峙的连接断开时，恢复配对连接
+        if (conn.collided && conn.pairedConnId >= 0) {
+            const pairedConn = this.connections.find(c => c.id === conn.pairedConnId && c.active);
+            if (pairedConn) {
+                pairedConn.collided = false;
+                pairedConn.collidedProgress = 1;
+                pairedConn.pairedConnId = -1;
+                pairedConn.pushBackTarget = -1;
+                if (pairedConn.reached && pairedConn.progress < 1) {
+                    pairedConn.reached = false;
+                }
+            }
+            conn.collided = false;
+            conn.pairedConnId = -1;
+            conn.pushBackTarget = -1;
+        }
 
         const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
         const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
@@ -1063,6 +1183,9 @@ export class GameManager extends Component {
 
         // 原连接不再继续发送攻击波
         conn.reached = false;
+
+        // 清除该连接已发出但未到达的攻击波
+        this.removeAttackWavesForConnection(conn);
 
         // 按断开位置比例分配已支付资源
         const fromRefund = conn.paidCost * cutRatio;
@@ -1111,6 +1234,19 @@ export class GameManager extends Component {
                 && c.active
         );
         for (const c of toRemove) {
+            // 碰撞对峙的连接被移除时，恢复配对连接为正常连接
+            if (c.collided && c.pairedConnId >= 0) {
+                const pairedConn = this.connections.find(pc => pc.id === c.pairedConnId && pc.active);
+                if (pairedConn) {
+                    pairedConn.collided = false;
+                    pairedConn.collidedProgress = 1;
+                    pairedConn.pairedConnId = -1;
+                    pairedConn.pushBackTarget = -1;
+                    if (pairedConn.reached && pairedConn.progress < 1) {
+                        pairedConn.reached = false;
+                    }
+                }
+            }
             c.active = false;
             if (c.node) c.node.destroy();
         }
@@ -1182,6 +1318,19 @@ export class GameManager extends Component {
                             conn.retractRefundCost = 0;
                             this.updatePlanetDisplay(refundPlanet, this.totalTime);
                         }
+                        // 恢复碰撞配对连接
+                        if (conn.collided && conn.pairedConnId >= 0) {
+                            const pairedConn = this.connections.find(c => c.id === conn.pairedConnId && c.active);
+                            if (pairedConn) {
+                                pairedConn.collided = false;
+                                pairedConn.collidedProgress = 1;
+                                pairedConn.pairedConnId = -1;
+                                pairedConn.pushBackTarget = -1;
+                                if (pairedConn.reached && pairedConn.progress < 1) {
+                                    pairedConn.reached = false;
+                                }
+                            }
+                        }
                         conn.active = false;
                         if (conn.node) conn.node.destroy();
                         this.connections.splice(i, 1);
@@ -1212,6 +1361,19 @@ export class GameManager extends Component {
                         conn.paidCost = 0;
                         this.updatePlanetDisplay(fromPlanet, this.totalTime);
                     }
+                    // 恢复碰撞配对连接
+                    if (conn.collided && conn.pairedConnId >= 0) {
+                        const pairedConn = this.connections.find(c => c.id === conn.pairedConnId && c.active);
+                        if (pairedConn) {
+                            pairedConn.collided = false;
+                            pairedConn.collidedProgress = 1;
+                            pairedConn.pairedConnId = -1;
+                            pairedConn.pushBackTarget = -1;
+                            if (pairedConn.reached && pairedConn.progress < 1) {
+                                pairedConn.reached = false;
+                            }
+                        }
+                    }
                     conn.active = false;
                     if (conn.node) conn.node.destroy();
                     this.connections.splice(i, 1);
@@ -1233,16 +1395,51 @@ export class GameManager extends Component {
 
             if (conn.reached) continue;
 
+            // 被顶回的连接：progress 逐步减小到 pushBackTarget
+            if (conn.pushBackTarget >= 0 && conn.progress > conn.pushBackTarget) {
+                const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
+                conn.progress -= conn.speed * dt;
+                if (conn.progress <= conn.pushBackTarget) {
+                    conn.progress = conn.pushBackTarget;
+                    conn.pushBackTarget = -1; // 顶回完成
+                }
+                // 按缩回进度动态返还资源
+                if (fromPlanet) {
+                    const targetPaid = conn.cost * conn.progress;
+                    const refundAmount = conn.paidCost - targetPaid;
+                    if (refundAmount > 0) {
+                        fromPlanet.population += refundAmount;
+                        conn.paidCost -= refundAmount;
+                        this.updatePlanetDisplay(fromPlanet, this.totalTime);
+                    }
+                }
+                // 顶回完成后检查是否到达对峙点
+                if (conn.pushBackTarget < 0 && conn.collided && conn.progress >= conn.collidedProgress - 0.01) {
+                    conn.reached = true;
+                }
+                continue;
+            }
+
+            // 被顶回但 progress 已 <= target 的情况，清除标记
+            if (conn.pushBackTarget >= 0) {
+                conn.pushBackTarget = -1;
+            }
+
+            // 碰撞对峙的连接：进度上限为 collidedProgress
+            const maxProgress = conn.collided ? conn.collidedProgress : 1;
+
             conn.progress += conn.speed * dt;
-            if (conn.progress >= 1) {
-                conn.progress = 1;
+            if (conn.progress >= maxProgress) {
+                conn.progress = maxProgress;
                 conn.reached = true;
             }
 
             // 按距离比例动态扣除资源
             const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
             if (fromPlanet) {
-                const targetPaid = conn.cost * conn.progress;
+                // 碰撞对峙的连接：成本只需支付到碰撞点
+                const effectiveCost = conn.collided ? conn.cost * conn.collidedProgress : conn.cost;
+                const targetPaid = effectiveCost * conn.progress / (conn.collided ? conn.collidedProgress : 1);
                 const deltaCost = targetPaid - conn.paidCost;
                 if (deltaCost > 0) {
                     const actualDeduct = Math.min(deltaCost, fromPlanet.population - 1);
@@ -1280,17 +1477,65 @@ export class GameManager extends Component {
 
         for (const wave of this.attackWaves) {
             if (wave.done) continue;
-            const toPlanet = this.planets.find(p => p.id === wave.toPlanetId)!;
-            const dir = new Vec2(toPlanet.pos.x - wave.pos.x, toPlanet.pos.y - wave.pos.y);
-            const dist = dir.length();
 
-            if (dist < toPlanet.radius + 5) {
-                this.applyAttack(wave);
-                wave.done = true;
+            if (wave.isCollidedWave && wave.collidedTarget) {
+                // 碰撞对峙攻击波：向对峙点移动
+                const dir = new Vec2(wave.collidedTarget.x - wave.pos.x, wave.collidedTarget.y - wave.pos.y);
+                const dist = dir.length();
+
+                if (dist < 10) {
+                    // 到达对峙点，检查是否有敌对攻击波在此相遇
+                    const enemyWave = this.attackWaves.find(
+                        w => !w.done && w.isCollidedWave
+                            && w.collidedConnId !== wave.collidedConnId
+                            && w.faction !== wave.faction
+                            && w.collidedTarget
+                            && Vec2.distance(w.pos, wave.collidedTarget) < 20
+                    );
+                    if (enemyWave) {
+                        // 双方攻击波在对峙点相遇，互相抵消（兵力差值继续前进）
+                        if (wave.amount > enemyWave.amount) {
+                            wave.amount -= enemyWave.amount;
+                            enemyWave.done = true;
+                            // 剩余兵力继续向敌方星球前进
+                            wave.isCollidedWave = false;
+                            const toPlanet = this.planets.find(p => p.id === wave.toPlanetId)!;
+                            wave.collidedTarget = null;
+                        } else if (enemyWave.amount > wave.amount) {
+                            enemyWave.amount -= wave.amount;
+                            wave.done = true;
+                            enemyWave.isCollidedWave = false;
+                            const toPlanet = this.planets.find(p => p.id === enemyWave.toPlanetId)!;
+                            enemyWave.collidedTarget = null;
+                        } else {
+                            // 双方兵力相等，互相抵消
+                            wave.done = true;
+                            enemyWave.done = true;
+                        }
+                    } else {
+                        // 没有敌方攻击波，到达对峙点后继续向敌方星球前进
+                        wave.isCollidedWave = false;
+                        wave.collidedTarget = null;
+                    }
+                } else {
+                    const norm = dir.normalize();
+                    wave.pos.x += norm.x * wave.speed * dt;
+                    wave.pos.y += norm.y * wave.speed * dt;
+                }
             } else {
-                const norm = dir.normalize();
-                wave.pos.x += norm.x * wave.speed * dt;
-                wave.pos.y += norm.y * wave.speed * dt;
+                // 普通攻击波逻辑
+                const toPlanet = this.planets.find(p => p.id === wave.toPlanetId)!;
+                const dir = new Vec2(toPlanet.pos.x - wave.pos.x, toPlanet.pos.y - wave.pos.y);
+                const dist = dir.length();
+
+                if (dist < toPlanet.radius + 5) {
+                    this.applyAttack(wave);
+                    wave.done = true;
+                } else {
+                    const norm = dir.normalize();
+                    wave.pos.x += norm.x * wave.speed * dt;
+                    wave.pos.y += norm.y * wave.speed * dt;
+                }
             }
         }
 
@@ -1314,13 +1559,30 @@ export class GameManager extends Component {
             const sendAmount = Math.max(1, Math.floor(fromPlanet.population * this.SEND_RATIO));
             if (sendAmount <= 0) continue;
 
+            const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
+
             const wave = new AttackWave();
             wave.fromPlanetId = conn.fromPlanetId;
             wave.toPlanetId = conn.toPlanetId;
             wave.faction = conn.faction;
             wave.amount = sendAmount;
-            wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
-            wave.speed = 180;
+
+            if (conn.collided) {
+                // 碰撞对峙：攻击波从fromPlanet出发，目标是对峙点（中间位置）
+                const dir = new Vec2(toPlanet.pos.x - fromPlanet.pos.x, toPlanet.pos.y - fromPlanet.pos.y);
+                const totalDist = dir.length();
+                const normDir = dir.normalize();
+                const collMidX = fromPlanet.pos.x + normDir.x * totalDist * conn.collidedProgress;
+                const collMidY = fromPlanet.pos.y + normDir.y * totalDist * conn.collidedProgress;
+                wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
+                wave.speed = 180;
+                wave.collidedTarget = new Vec2(collMidX, collMidY);
+                wave.isCollidedWave = true;
+                wave.collidedConnId = conn.id;
+            } else {
+                wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
+                wave.speed = 180;
+            }
 
             this.createAttackWaveNode(wave);
             this.attackWaves.push(wave);
@@ -1454,6 +1716,17 @@ export class GameManager extends Component {
 
                 this.createConnectionNode(conn);
                 this.connections.push(conn);
+
+                // 检测敌对势力反向连接碰撞
+                const enemyReverseConn = this.connections.find(
+                    c => c.fromPlanetId === bestTarget.id && c.toPlanetId === ep.id
+                        && c.active && !c.retracting
+                        && c.faction !== Faction.ENEMY
+                        && c.faction !== Faction.NEUTRAL
+                );
+                if (enemyReverseConn) {
+                    this.handleHostileCollision(conn, enemyReverseConn);
+                }
             }
         }
 
