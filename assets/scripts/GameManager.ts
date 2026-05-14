@@ -841,14 +841,14 @@ export class GameManager extends Component {
     }
 
     // ==================== 尝试创建连接 ====================
-    private tryCreateConnection(from: PlanetData, to: PlanetData) {
+    private tryCreateConnection(from: PlanetData, to: PlanetData, silent: boolean = false) {
         const dist = Vec2.distance(from.pos, to.pos);
 
         const existing = this.connections.find(
             c => c.fromPlanetId === from.id && c.toPlanetId === to.id && c.active
         );
         if (existing) {
-            this.setStatus('连接已存在！');
+            if (!silent) this.setStatus('连接已存在！');
             return;
         }
 
@@ -859,7 +859,7 @@ export class GameManager extends Component {
             );
             if (reverseConn) {
                 this.retractConnection(reverseConn);
-                this.setStatus(`同阵营反向连接缩回中，资源按比例返还！`);
+                if (!silent) this.setStatus(`同阵营反向连接缩回中，资源按比例返还！`);
             }
         }
 
@@ -875,7 +875,7 @@ export class GameManager extends Component {
         const cost = dist * this.CONNECTION_COST_PER_UNIT;
 
         if (from.population <= 1) {
-            this.setStatus('文明数量为零，无法建立连接！');
+            if (!silent) this.setStatus('文明数量为零，无法建立连接！');
             return;
         }
 
@@ -895,11 +895,11 @@ export class GameManager extends Component {
 
         if (enemyReverseConn) {
             this.handleHostileCollision(conn, enemyReverseConn);
-            this.setStatus(`敌对势力碰撞！两条连接形成对峙！`);
+            if (!silent) this.setStatus(`敌对势力碰撞！两条连接形成对峙！`);
         } else if (from.population <= cost + 2) {
-            this.setStatus(`连接建立！文明不足，连接可能中途中断（需 ${Math.floor(cost)}）`);
+            if (!silent) this.setStatus(`连接建立！文明不足，连接可能中途中断（需 ${Math.floor(cost)}）`);
         } else {
-            this.setStatus(`连接建立！预计消耗文明: ${Math.floor(cost)}`);
+            if (!silent) this.setStatus(`连接建立！预计消耗文明: ${Math.floor(cost)}`);
         }
     }
 
@@ -1226,31 +1226,6 @@ export class GameManager extends Component {
         planet.faction = newFaction;
         planet.population = Math.max(1, Math.floor(planet.population));
         this.updatePlanetDisplay(planet, this.totalTime);
-
-        const toRemove = this.connections.filter(
-            c => (c.fromPlanetId === planet.id || c.toPlanetId === planet.id)
-                && c.faction !== newFaction
-                && c.faction !== Faction.PLAYER
-                && c.active
-        );
-        for (const c of toRemove) {
-            // 碰撞对峙的连接被移除时，恢复配对连接为正常连接
-            if (c.collided && c.pairedConnId >= 0) {
-                const pairedConn = this.connections.find(pc => pc.id === c.pairedConnId && pc.active);
-                if (pairedConn) {
-                    pairedConn.collided = false;
-                    pairedConn.collidedProgress = 1;
-                    pairedConn.pairedConnId = -1;
-                    pairedConn.pushBackTarget = -1;
-                    if (pairedConn.reached && pairedConn.progress < 1) {
-                        pairedConn.reached = false;
-                    }
-                }
-            }
-            c.active = false;
-            if (c.node) c.node.destroy();
-        }
-        this.connections = this.connections.filter(c => c.active);
 
         this.setStatus(`${FACTION_NAMES[newFaction]}占领了星球！`);
     }
@@ -1675,6 +1650,7 @@ export class GameManager extends Component {
 
             for (const tp of this.planets) {
                 if (tp.id === ep.id) continue;
+                if (tp.faction === Faction.ENEMY) continue; // AI不连接同阵营星球
                 const dist = Vec2.distance(ep.pos, tp.pos);
 
                 const exists = this.connections.find(
@@ -1688,7 +1664,6 @@ export class GameManager extends Component {
                 let score = 0;
                 if (tp.faction === Faction.PLAYER) score += 35;
                 else if (tp.faction === Faction.NEUTRAL) score += 25;
-                else score += 5;
 
                 score -= tp.population * 0.4;
                 score -= dist * 0.03;
@@ -1700,41 +1675,21 @@ export class GameManager extends Component {
             }
 
             if (bestTarget) {
-                const dist = Vec2.distance(ep.pos, bestTarget.pos);
-                const cost = dist * this.CONNECTION_COST_PER_UNIT;
-
-                const conn = new ConnectionData();
-                conn.id = this.nextConnectionId++;
-                conn.fromPlanetId = ep.id;
-                conn.toPlanetId = bestTarget.id;
-                conn.faction = Faction.ENEMY;
-                conn.cost = cost;
-                conn.paidCost = 0;
-                conn.progress = 0;
-                conn.reached = false;
-                conn.active = true;
-
-                this.createConnectionNode(conn);
-                this.connections.push(conn);
-
-                // 检测敌对势力反向连接碰撞
-                const enemyReverseConn = this.connections.find(
-                    c => c.fromPlanetId === bestTarget.id && c.toPlanetId === ep.id
-                        && c.active && !c.retracting
-                        && c.faction !== Faction.ENEMY
-                        && c.faction !== Faction.NEUTRAL
-                );
-                if (enemyReverseConn) {
-                    this.handleHostileCollision(conn, enemyReverseConn);
-                }
+                this.tryCreateConnection(ep, bestTarget, true);
             }
         }
 
-        const enemyConns = this.connections.filter(c => c.faction === Faction.ENEMY && c.active && c.reached);
-        for (const ec of enemyConns) {
-            const toPlanet = this.planets.find(p => p.id === ec.toPlanetId)!;
-            if (toPlanet.faction === Faction.ENEMY && Math.random() > 0.75) {
-                this.breakConnection(ec);
+        // AI清理自己的过期连接：源星球不再属于AI，或目标星球已是AI阵营
+        const staleConns = this.connections.filter(
+            c => c.faction === Faction.ENEMY && c.active && !c.retracting
+        );
+        for (const sc of staleConns) {
+            const fromPlanet = this.planets.find(p => p.id === sc.fromPlanetId);
+            const toPlanet = this.planets.find(p => p.id === sc.toPlanetId);
+            if (!fromPlanet || !toPlanet) continue;
+            if (fromPlanet.faction !== Faction.ENEMY || toPlanet.faction === Faction.ENEMY) {
+                if (Math.random() > 0.3) continue; // 每次只以70%概率清理，避免瞬间全部断开
+                this.breakConnection(sc);
             }
         }
     }
