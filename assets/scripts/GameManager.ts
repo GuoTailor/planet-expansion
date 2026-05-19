@@ -58,6 +58,8 @@ export class PlanetData {
     graphicsNode: Node | null = null;
     labelNode: Node | null = null;
     pulseTime: number = 0;
+    // 用于承载超过满人口时的溢出值，会在发射时均分发走
+    overflowPool: number = 0;
 }
 
 // ===================== 连接数据 =====================
@@ -254,6 +256,7 @@ export class GameManager extends Component {
             data.population = cfg.population;
             data.maxPopulation = cfg.maxPopulation;
             data.growRate = cfg.growRate !== undefined ? cfg.growRate : (cfg.faction === Faction.NEUTRAL ? 0.8 : 1.5);
+            data.overflowPool = 0;
             this.createPlanetNode(data);
             this.planets.push(data);
         }
@@ -1225,9 +1228,51 @@ export class GameManager extends Component {
     private capturePlanet(planet: PlanetData, newFaction: Faction) {
         planet.faction = newFaction;
         planet.population = Math.max(1, Math.floor(planet.population));
+        planet.overflowPool = 0; // 占领后溢出池清空
         this.updatePlanetDisplay(planet, this.totalTime);
 
         this.setStatus(`${FACTION_NAMES[newFaction]}占领了星球！`);
+
+        // 1. 先处理空中已发出的攻击波：策反并掉头飞回
+        //    (必须先修改攻击波，否则下面 retraction 时会被当做旧连接发射的波给删掉)
+        for (const wave of this.attackWaves) {
+            if (!wave.done && wave.fromPlanetId === planet.id) {
+                // 波临阵倒戈并掉头
+                wave.faction = newFaction;
+
+                // 掉头飞向刚才被攻克的本星球(planet.id)补充兵力
+                const oldTo = wave.toPlanetId;
+                wave.toPlanetId = planet.id;
+                wave.fromPlanetId = oldTo;
+
+                // 取消原本可能具有的对峙点锁定逻辑
+                if (wave.isCollidedWave) {
+                    wave.isCollidedWave = false;
+                    wave.collidedTarget = null;
+                }
+
+                // 刷新外观颜色
+                if (wave.node) {
+                    const g = wave.node.getComponent(Graphics);
+                    if (g) {
+                        this.drawAttackWave(g, wave.faction);
+                    }
+                }
+            }
+        }
+
+        // 2. 再处理这颗星球已经发出去的连接：策反颜色并触发缩回动画
+        for (const conn of this.connections) {
+            // 只要是这颗星球发出去的连接，统统打断并策反其缩回返还
+            if (conn.active && conn.fromPlanetId === planet.id && !conn.retracting) {
+                // 更换连线的阵营，这样缩回的过程中颜色显示的是自己的阵营
+                conn.faction = newFaction;
+
+                // 触发缩回。注意由于它是从 fromPlanet 发射出的，缩回逻辑默认就是按退回 fromPlanet 去执行的，
+                // 同时因为前面它的那些“空中波段”已经修改了 toPlanetId 属性，所以这步里的防冗余清波逻辑(removeAttackWavesForConnection)不会删掉那些正在掉头返航的波。
+                this.retractConnection(conn);
+            }
+        }
     }
 
     // ==================== 每帧更新 ====================
@@ -1528,40 +1573,69 @@ export class GameManager extends Component {
         for (const conn of this.connections) {
             if (!conn.active || !conn.reached) continue;
             const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
+
+            // 发送方只允许从对应自身阵营的星球发出
             if (fromPlanet.faction !== conn.faction) continue;
-            if (fromPlanet.population < 3) continue;
 
-            const sendAmount = Math.max(1, Math.floor(fromPlanet.population * this.SEND_RATIO));
-            if (sendAmount <= 0) continue;
-
-            const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
-
-            const wave = new AttackWave();
-            wave.fromPlanetId = conn.fromPlanetId;
-            wave.toPlanetId = conn.toPlanetId;
-            wave.faction = conn.faction;
-            wave.amount = sendAmount;
-
-            if (conn.collided) {
-                // 碰撞对峙：攻击波从fromPlanet出发，目标是对峙点（中间位置）
-                const dir = new Vec2(toPlanet.pos.x - fromPlanet.pos.x, toPlanet.pos.y - fromPlanet.pos.y);
-                const totalDist = dir.length();
-                const normDir = dir.normalize();
-                const collMidX = fromPlanet.pos.x + normDir.x * totalDist * conn.collidedProgress;
-                const collMidY = fromPlanet.pos.y + normDir.y * totalDist * conn.collidedProgress;
-                wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
-                wave.speed = 180;
-                wave.collidedTarget = new Vec2(collMidX, collMidY);
-                wave.isCollidedWave = true;
-                wave.collidedConnId = conn.id;
-            } else {
-                wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
-                wave.speed = 180;
+            // 计算正常由自身人口决定的发送额度
+            let sendAmount = 0;
+            if (fromPlanet.population >= 3) {
+                sendAmount = Math.max(1, Math.floor(fromPlanet.population * this.SEND_RATIO));
             }
 
-            this.createAttackWaveNode(wave);
-            this.attackWaves.push(wave);
+            // 获取该星球向外发送的所有合法活跃连接，用来均分累积的人口溢出量
+            const allOutConns = this.connections.filter(
+                c => c.active && c.reached && c.fromPlanetId === fromPlanet.id && c.faction === fromPlanet.faction
+            );
+
+            let overflowShare = 0;
+            if (allOutConns.length > 0) {
+                overflowShare = fromPlanet.overflowPool / allOutConns.length;
+            }
+
+            const totalSendAmount = sendAmount + overflowShare;
+
+            if (totalSendAmount <= 0) continue;
+
+            // 根据混合额度，在此连接创建并发送单独的攻击波
+            this.createAndSendWave(conn, totalSendAmount);
         }
+
+        // 发送完本轮全波次后，清空每个星球在此期间累积的人口溢出池
+        for (const p of this.planets) {
+            p.overflowPool = 0;
+        }
+    }
+
+    private createAndSendWave(conn: ConnectionData, amount: number) {
+        const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
+        const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
+
+        const wave = new AttackWave();
+        wave.fromPlanetId = conn.fromPlanetId;
+        wave.toPlanetId = conn.toPlanetId;
+        wave.faction = conn.faction;
+        wave.amount = amount;
+
+        if (conn.collided) {
+            // 碰撞对峙：攻击波从fromPlanet出发，目标是对峙点（中间位置）
+            const dir = new Vec2(toPlanet.pos.x - fromPlanet.pos.x, toPlanet.pos.y - fromPlanet.pos.y);
+            const totalDist = dir.length();
+            const normDir = dir.normalize();
+            const collMidX = fromPlanet.pos.x + normDir.x * totalDist * conn.collidedProgress;
+            const collMidY = fromPlanet.pos.y + normDir.y * totalDist * conn.collidedProgress;
+            wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
+            wave.speed = 180;
+            wave.collidedTarget = new Vec2(collMidX, collMidY);
+            wave.isCollidedWave = true;
+            wave.collidedConnId = conn.id;
+        } else {
+            wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
+            wave.speed = 180;
+        }
+
+        this.createAttackWaveNode(wave);
+        this.attackWaves.push(wave);
     }
 
     private applyAttack(wave: AttackWave) {
@@ -1570,6 +1644,8 @@ export class GameManager extends Component {
         if (targetPlanet.faction === wave.faction) {
             targetPlanet.population += wave.amount;
             if (targetPlanet.population > targetPlanet.maxPopulation) {
+                // 如果同阵营支援使得人口超过上限，则存入溢出池后续发射发走
+                targetPlanet.overflowPool += (targetPlanet.population - targetPlanet.maxPopulation);
                 targetPlanet.population = targetPlanet.maxPopulation;
             }
         } else {
@@ -1582,12 +1658,9 @@ export class GameManager extends Component {
         this.updatePlanetDisplay(targetPlanet, this.totalTime);
     }
 
-    private createAttackWaveNode(wave: AttackWave) {
-        const node = new Node('AttackWave');
-        node.addComponent(UITransform).setContentSize(new Size(20, 20));
-        const g = node.addComponent(Graphics);
-
-        const color = FACTION_COLORS[wave.faction];
+    private drawAttackWave(g: Graphics, faction: Faction) {
+        g.clear();
+        const color = FACTION_COLORS[faction];
 
         g.fillColor = new Color(color.r, color.g, color.b, 60);
         g.circle(0, 0, 8);
@@ -1600,11 +1673,19 @@ export class GameManager extends Component {
         g.fillColor = new Color(255, 255, 255, 180);
         g.circle(-1, 1, 2);
         g.fill();
+    }
+
+    private createAttackWaveNode(wave: AttackWave) {
+        const node = new Node('AttackWave');
+        node.addComponent(UITransform).setContentSize(new Size(20, 20));
+        const g = node.addComponent(Graphics);
+
+        this.drawAttackWave(g, wave.faction);
 
         const lNode = new Node('AmountLabel');
         lNode.addComponent(UITransform).setContentSize(new Size(40, 18));
         const label = lNode.addComponent(Label);
-        label.string = wave.amount.toString();
+        label.string = Math.floor(wave.amount).toString();
         label.fontSize = 11;
         label.color = new Color(255, 255, 255, 200);
         label.horizontalAlign = Label.HorizontalAlign.CENTER;
@@ -1620,6 +1701,13 @@ export class GameManager extends Component {
         for (const wave of this.attackWaves) {
             if (wave.done || !wave.node) continue;
             wave.node.setPosition(wave.pos.x, wave.pos.y, 0);
+
+            // 保持抵消后的数字实时显示正确
+            const labelNode = wave.node.getChildByName('AmountLabel');
+            if (labelNode) {
+                const label = labelNode.getComponent(Label);
+                if (label) label.string = Math.floor(wave.amount).toString();
+            }
         }
     }
 
@@ -1629,8 +1717,18 @@ export class GameManager extends Component {
         this.growTimer = 0;
 
         for (const planet of this.planets) {
-            const rate = planet.faction === Faction.NEUTRAL ? planet.growRate * 0.5 : planet.growRate;
-            planet.population = Math.min(planet.population + rate, planet.maxPopulation);
+            // 中立星球不再自动增长人口
+            if (planet.faction === Faction.NEUTRAL) continue;
+
+            planet.population += planet.growRate;
+            if (planet.population > planet.maxPopulation) {
+                // 如果人口超标，溢出的人口被积攒进入池子，由发射波带走释放
+                planet.overflowPool += (planet.population - planet.maxPopulation);
+                planet.population = planet.maxPopulation;
+            }
+
+            // 刷新当前星球由于生长带来的人口数值更新到UI层面
+            this.updatePlanetDisplay(planet, this.totalTime);
         }
     }
 
