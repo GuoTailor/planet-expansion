@@ -1,3 +1,5 @@
+import { director } from 'cc';
+
 // ===================== 派别枚举 =====================
 export enum Faction {
     PLAYER = 0,
@@ -6,55 +8,88 @@ export enum Faction {
 }
 
 // ===================== 星球配置 =====================
+// 坐标为归一化竖屏坐标：nx/ny ∈ [-1, 1]，原点为屏幕中心，
+// 运行时映射到逻辑坐标 ±(设计半径 - 边距)，天然适配任意分辨率。
 export interface PlanetConfig {
-    x: number;
-    y: number;
+    /** 归一化水平坐标：-1 = 左边缘，1 = 右边缘 */
+    nx: number;
+    /** 归一化垂直坐标：-1 = 下边缘，1 = 上边缘 */
+    ny: number;
     faction: Faction;
-    // 人口
     population: number;
-    // 最大人口
     maxPopulation: number;
-    // 人口增长率
+    /** 缺省时中立 0.8 / 阵营 1.5 */
     growRate?: number;
 }
 
 // ===================== 关卡配置 =====================
+// 除 id/name/planets 外均有默认值，新增关卡只需提供最少字段。
 export interface LevelData {
-    // 关卡ID
     id: number;
-    // 关卡名称
     name: string;
-    // 关卡描述
-    description: string;
-    // 星球列表
+    description?: string;
     planets: PlanetConfig[];
-    // AI刷新间隔
-    aiInterval: number;
-    // 攻击间隔
-    attackInterval: number;
-    // 发送比例
-    sendRatio: number;
-    difficulty: number; // 1-5 难度等级
+    /** AI 决策间隔（秒），默认随难度递减 */
+    aiInterval?: number;
+    /** 攻击波发送间隔（秒），默认随难度递减 */
+    attackInterval?: number;
+    /** 每次发送人口比例，默认随难度递增 */
+    sendRatio?: number;
+    /** 难度 1-5，默认 1 */
+    difficulty?: number;
 }
 
-// ===================== 所有关卡配置 =====================
-export const LEVELS: LevelData[] = [
+/** 关卡列表变化事件（动态注册关卡后触发，菜单据此刷新） */
+export const EVENT_LEVELS_CHANGED = 'levels_changed';
+
+// ===================== 关卡注册表（支持动态新增） =====================
+// registerLevel() 可在任意时机调用（含运行时），同 id 会被覆盖，
+// 列表始终按 id 升序，注册后广播 EVENT_LEVELS_CHANGED。
+const _levels: LevelData[] = [];
+
+function fillDefaults(level: LevelData): LevelData {
+    const difficulty = level.difficulty ?? 1;
+    return {
+        description: '占领所有敌方星球，建立你的星际帝国',
+        difficulty,
+        aiInterval: Math.max(2.0, 5.5 - difficulty * 0.5),
+        attackInterval: Math.max(0.8, 1.5 - difficulty * 0.1),
+        sendRatio: Math.min(0.35, 0.18 + difficulty * 0.02),
+        ...level,
+    };
+}
+
+export function registerLevel(level: LevelData) {
+    const filled = fillDefaults(level);
+    const idx = _levels.findIndex(l => l.id === filled.id);
+    if (idx >= 0) _levels[idx] = filled;
+    else _levels.push(filled);
+    _levels.sort((a, b) => a.id - b.id);
+    director.emit(EVENT_LEVELS_CHANGED);
+}
+
+export function getLevels(): readonly LevelData[] {
+    return _levels;
+}
+
+export function getLevelData(id: number): LevelData | undefined {
+    return _levels.find(l => l.id === id);
+}
+
+// ===================== 内置关卡 =====================
+const BUILTIN_LEVELS: LevelData[] = [
     {
         id: 1,
         name: '星际前哨',
-        description: '占领所有敌方星球，建立你的星际帝国',
         difficulty: 1,
-        aiInterval: 5.0,
-        attackInterval: 1.4,
-        sendRatio: 0.2,
         planets: [
-            { x: -420, y: -120, faction: Faction.PLAYER, population: 35, maxPopulation: 70, growRate: 1.5 },
-            { x: -280, y: 120, faction: Faction.PLAYER, population: 25, maxPopulation: 45, growRate: 1.5 },
-            { x: -100, y: -220, faction: Faction.NEUTRAL, population: 15, maxPopulation: 30, growRate: 0.8 },
-            { x: 30, y: 60, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25, growRate: 0.8 },
-            { x: 180, y: -140, faction: Faction.NEUTRAL, population: 18, maxPopulation: 35, growRate: 0.8 },
-            { x: 320, y: 160, faction: Faction.ENEMY, population: 25, maxPopulation: 50, growRate: 1.5 },
-            { x: 430, y: -80, faction: Faction.ENEMY, population: 20, maxPopulation: 40, growRate: 1.5 },
+            { nx: 0.3333, ny: -0.6563, faction: Faction.PLAYER, population: 35, maxPopulation: 70 },
+            { nx: -0.3333, ny: -0.4375, faction: Faction.PLAYER, population: 25, maxPopulation: 45 },
+            { nx: 0.6111, ny: -0.1563, faction: Faction.NEUTRAL, population: 15, maxPopulation: 30 },
+            { nx: -0.1667, ny: 0.0469, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.3889, ny: 0.2813, faction: Faction.NEUTRAL, population: 18, maxPopulation: 35 },
+            { nx: -0.4444, ny: 0.5, faction: Faction.ENEMY, population: 25, maxPopulation: 50 },
+            { nx: 0.2222, ny: 0.6719, faction: Faction.ENEMY, population: 20, maxPopulation: 40 },
         ],
     },
     {
@@ -62,18 +97,15 @@ export const LEVELS: LevelData[] = [
         name: '星云冲突',
         description: '更强大的敌人在星云中等待你',
         difficulty: 2,
-        aiInterval: 4.0,
-        attackInterval: 1.2,
-        sendRatio: 0.25,
         planets: [
-            { x: -450, y: -100, faction: Faction.PLAYER, population: 35, maxPopulation: 70, growRate: 1.5 },
-            { x: -300, y: 150, faction: Faction.PLAYER, population: 25, maxPopulation: 45, growRate: 1.5 },
-            { x: -120, y: -250, faction: Faction.NEUTRAL, population: 15, maxPopulation: 30, growRate: 0.8 },
-            { x: 0, y: 50, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25, growRate: 0.8 },
-            { x: 150, y: -160, faction: Faction.NEUTRAL, population: 18, maxPopulation: 35, growRate: 0.8 },
-            { x: -200, y: -300, faction: Faction.NEUTRAL, population: 10, maxPopulation: 20, growRate: 0.8 },
-            { x: 300, y: 180, faction: Faction.ENEMY, population: 30, maxPopulation: 55, growRate: 1.5 },
-            { x: 420, y: -60, faction: Faction.ENEMY, population: 28, maxPopulation: 50, growRate: 1.5 },
+            { nx: 0.2778, ny: -0.7031, faction: Faction.PLAYER, population: 35, maxPopulation: 70 },
+            { nx: -0.4167, ny: -0.4688, faction: Faction.PLAYER, population: 25, maxPopulation: 45 },
+            { nx: 0.6944, ny: -0.1875, faction: Faction.NEUTRAL, population: 15, maxPopulation: 30 },
+            { nx: -0.1389, ny: 0, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.4444, ny: 0.2344, faction: Faction.NEUTRAL, population: 18, maxPopulation: 35 },
+            { nx: 0.8333, ny: -0.3125, faction: Faction.NEUTRAL, population: 10, maxPopulation: 20 },
+            { nx: -0.5, ny: 0.4688, faction: Faction.ENEMY, population: 30, maxPopulation: 55 },
+            { nx: 0.1667, ny: 0.6563, faction: Faction.ENEMY, population: 28, maxPopulation: 50 },
         ],
     },
     {
@@ -81,20 +113,17 @@ export const LEVELS: LevelData[] = [
         name: '暗物质风暴',
         description: '暗物质阻断了远距离连接，在近距离战斗中求胜',
         difficulty: 3,
-        aiInterval: 3.5,
-        attackInterval: 1.1,
-        sendRatio: 0.25,
         planets: [
-            { x: -400, y: -80, faction: Faction.PLAYER, population: 30, maxPopulation: 60, growRate: 1.5 },
-            { x: -260, y: 100, faction: Faction.PLAYER, population: 22, maxPopulation: 40, growRate: 1.5 },
-            { x: -100, y: -200, faction: Faction.NEUTRAL, population: 12, maxPopulation: 28, growRate: 0.8 },
-            { x: 20, y: 80, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22, growRate: 0.8 },
-            { x: 160, y: -130, faction: Faction.NEUTRAL, population: 15, maxPopulation: 30, growRate: 0.8 },
-            { x: -180, y: -280, faction: Faction.NEUTRAL, population: 8, maxPopulation: 18, growRate: 0.8 },
-            { x: 280, y: 200, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28, growRate: 0.8 },
-            { x: 280, y: 100, faction: Faction.ENEMY, population: 32, maxPopulation: 55, growRate: 1.5 },
-            { x: 400, y: -50, faction: Faction.ENEMY, population: 28, maxPopulation: 48, growRate: 1.5 },
-            { x: 400, y: -160, faction: Faction.ENEMY, population: 25, maxPopulation: 42, growRate: 1.5 },
+            { nx: 0.2222, ny: -0.625, faction: Faction.PLAYER, population: 30, maxPopulation: 60 },
+            { nx: -0.2778, ny: -0.4063, faction: Faction.PLAYER, population: 22, maxPopulation: 40 },
+            { nx: 0.5556, ny: -0.1563, faction: Faction.NEUTRAL, population: 12, maxPopulation: 28 },
+            { nx: -0.2222, ny: 0.0313, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: 0.3611, ny: 0.25, faction: Faction.NEUTRAL, population: 15, maxPopulation: 30 },
+            { nx: 0.7778, ny: -0.2813, faction: Faction.NEUTRAL, population: 8, maxPopulation: 18 },
+            { nx: -0.5556, ny: 0.4375, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: -0.2778, ny: 0.4375, faction: Faction.ENEMY, population: 32, maxPopulation: 55 },
+            { nx: 0.1389, ny: 0.625, faction: Faction.ENEMY, population: 28, maxPopulation: 48 },
+            { nx: 0.4444, ny: 0.625, faction: Faction.ENEMY, population: 25, maxPopulation: 42 },
         ],
     },
     {
@@ -102,21 +131,18 @@ export const LEVELS: LevelData[] = [
         name: '银河征服',
         description: '三方势力混战，在混沌中崛起',
         difficulty: 4,
-        aiInterval: 3.0,
-        attackInterval: 1.0,
-        sendRatio: 0.28,
         planets: [
-            { x: -440, y: 0, faction: Faction.PLAYER, population: 30, maxPopulation: 60, growRate: 1.5 },
-            { x: -340, y: 160, faction: Faction.PLAYER, population: 20, maxPopulation: 38, growRate: 1.5 },
-            { x: -340, y: -160, faction: Faction.PLAYER, population: 18, maxPopulation: 35, growRate: 1.5 },
-            { x: -100, y: 80, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22, growRate: 0.8 },
-            { x: 0, y: -80, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25, growRate: 0.8 },
-            { x: 100, y: 200, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28, growRate: 0.8 },
-            { x: 100, y: -200, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28, growRate: 0.8 },
-            { x: 250, y: 0, faction: Faction.NEUTRAL, population: 16, maxPopulation: 30, growRate: 0.8 },
-            { x: 350, y: 150, faction: Faction.ENEMY, population: 30, maxPopulation: 55, growRate: 1.5 },
-            { x: 350, y: -150, faction: Faction.ENEMY, population: 28, maxPopulation: 50, growRate: 1.5 },
-            { x: 450, y: 0, faction: Faction.ENEMY, population: 32, maxPopulation: 58, growRate: 1.5 },
+            { nx: 0, ny: -0.6875, faction: Faction.PLAYER, population: 30, maxPopulation: 60 },
+            { nx: -0.4444, ny: -0.5313, faction: Faction.PLAYER, population: 20, maxPopulation: 38 },
+            { nx: 0.4444, ny: -0.5313, faction: Faction.PLAYER, population: 18, maxPopulation: 35 },
+            { nx: -0.2222, ny: -0.1563, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: 0.2222, ny: 0, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.5556, ny: 0.1563, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.5556, ny: 0.1563, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0, ny: 0.3906, faction: Faction.NEUTRAL, population: 16, maxPopulation: 30 },
+            { nx: -0.4167, ny: 0.5469, faction: Faction.ENEMY, population: 30, maxPopulation: 55 },
+            { nx: 0.4167, ny: 0.5469, faction: Faction.ENEMY, population: 28, maxPopulation: 50 },
+            { nx: 0, ny: 0.7031, faction: Faction.ENEMY, population: 32, maxPopulation: 58 },
         ],
     },
     {
@@ -124,26 +150,30 @@ export const LEVELS: LevelData[] = [
         name: '终极对决',
         description: '最后的战场，只有最强者才能存活',
         difficulty: 5,
-        aiInterval: 2.5,
-        attackInterval: 0.9,
-        sendRatio: 0.3,
         planets: [
-            { x: -450, y: 0, faction: Faction.PLAYER, population: 28, maxPopulation: 55, growRate: 1.5 },
-            { x: -320, y: 180, faction: Faction.PLAYER, population: 18, maxPopulation: 35, growRate: 1.5 },
-            { x: -320, y: -180, faction: Faction.PLAYER, population: 16, maxPopulation: 32, growRate: 1.5 },
-            { x: -80, y: 120, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22, growRate: 0.8 },
-            { x: 0, y: 0, faction: Faction.NEUTRAL, population: 15, maxPopulation: 30, growRate: 0.8 },
-            { x: -80, y: -120, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22, growRate: 0.8 },
-            { x: 120, y: 200, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25, growRate: 0.8 },
-            { x: 120, y: -200, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25, growRate: 0.8 },
-            { x: 280, y: 80, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28, growRate: 0.8 },
-            { x: 280, y: -80, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28, growRate: 0.8 },
-            { x: 380, y: 180, faction: Faction.ENEMY, population: 35, maxPopulation: 60, growRate: 1.5 },
-            { x: 380, y: -180, faction: Faction.ENEMY, population: 32, maxPopulation: 55, growRate: 1.5 },
-            { x: 480, y: 0, faction: Faction.ENEMY, population: 38, maxPopulation: 65, growRate: 1.5 },
+            { nx: 0, ny: -0.7031, faction: Faction.PLAYER, population: 28, maxPopulation: 55 },
+            { nx: -0.5, ny: -0.5, faction: Faction.PLAYER, population: 18, maxPopulation: 35 },
+            { nx: 0.5, ny: -0.5, faction: Faction.PLAYER, population: 16, maxPopulation: 32 },
+            { nx: -0.3333, ny: -0.125, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: 0, ny: 0, faction: Faction.NEUTRAL, population: 15, maxPopulation: 30 },
+            { nx: 0.3333, ny: -0.125, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: -0.5556, ny: 0.1875, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.5556, ny: 0.1875, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.2222, ny: 0.4375, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.2222, ny: 0.4375, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: -0.5, ny: 0.5938, faction: Faction.ENEMY, population: 35, maxPopulation: 60 },
+            { nx: 0.5, ny: 0.5938, faction: Faction.ENEMY, population: 32, maxPopulation: 55 },
+            { nx: 0, ny: 0.75, faction: Faction.ENEMY, population: 38, maxPopulation: 65 },
         ],
     },
 ];
+
+for (const level of BUILTIN_LEVELS) {
+    registerLevel(level);
+}
+
+/** @deprecated 保留兼容，请使用 getLevels() */
+export const LEVELS = _levels;
 
 // ===================== 全局游戏状态 =====================
 export class GameState {
@@ -168,11 +198,7 @@ export class GameState {
     }
 
     static getLevelData(id: number): LevelData | undefined {
-        return LEVELS.find(l => l.id === id);
-    }
-
-    static getCurrentLevelData(): LevelData | undefined {
-        return this.getLevelData(this._currentLevel);
+        return getLevelData(id);
     }
 
     static setHighScore(levelId: number, score: number) {

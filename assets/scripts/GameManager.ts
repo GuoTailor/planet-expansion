@@ -1,139 +1,54 @@
 import {
     _decorator,
-    Canvas,
     Color,
     Component,
     director,
-    EventTouch,
     find,
     Graphics,
-    Input,
     Label,
     Node,
-    Size,
     UITransform,
-    Vec2
+    Vec2,
 } from 'cc';
-import {Faction, GameState, LevelData} from './LevelConfig';
-import {MenuScene} from "./MenuScene";
+import { Faction, GameState, getLevelData, LevelData } from './LevelConfig';
+import {
+    DESIGN_HEIGHT,
+    DESIGN_WIDTH,
+    FACTION_NAMES,
+    GameResult,
+    HALF_EXTENT_X,
+    HALF_EXTENT_Y,
+    TUNING,
+} from './core/GameConstants';
+import { setupPortraitCanvas } from './core/ScreenAdapter';
+import { Starfield } from './core/Starfield';
+import { createLabel, createUINode } from './core/UIHelper';
+import { AttackWave, AttackWaveView } from './game/AttackWave';
+import { AIController } from './game/AIController';
+import { ConnectionData, ConnectionView } from './game/Connection';
+import { PlanetData, PlanetView } from './game/Planet';
+import { ResultPanel } from './game/ResultPanel';
+import { TouchController } from './game/TouchController';
 
-const {ccclass, property} = _decorator;
+const { ccclass } = _decorator;
 
-// ===================== 派别颜色 =====================
-const FACTION_COLORS: Record<number, Color> = {
-    [Faction.PLAYER]: new Color(80, 180, 255, 255),
-    [Faction.ENEMY]: new Color(255, 80, 80, 255),
-    [Faction.NEUTRAL]: new Color(180, 180, 180, 255),
-};
-
-const FACTION_COLORS_DARK: Record<number, Color> = {
-    [Faction.PLAYER]: new Color(30, 80, 180, 255),
-    [Faction.ENEMY]: new Color(160, 30, 30, 255),
-    [Faction.NEUTRAL]: new Color(100, 100, 100, 255),
-};
-
-const FACTION_NAMES: Record<number, string> = {
-    [Faction.PLAYER]: '我方',
-    [Faction.ENEMY]: '敌方',
-    [Faction.NEUTRAL]: '中立',
-};
-
-// ===================== 游戏结果 =====================
-export enum GameResult {
-    NONE = 0,
-    WIN = 1,
-    LOSE = 2,
-}
-
-// ===================== 星球数据 =====================
-export class PlanetData {
-    id: number = 0;
-    pos: Vec2 = new Vec2();
-    radius: number = 30;
-    faction: Faction = Faction.NEUTRAL;
-    population: number = 10;
-    maxPopulation: number = 50;
-    growRate: number = 1;
-    node: Node | null = null;
-    graphicsNode: Node | null = null;
-    labelNode: Node | null = null;
-    pulseTime: number = 0;
-    // 用于承载超过满人口时的溢出值，会在发射时均分发走
-    overflowPool: number = 0;
-}
-
-// ===================== 连接数据 =====================
-export class ConnectionData {
-    id: number = 0;
-    fromPlanetId: number = 0;
-    toPlanetId: number = 0;
-    faction: Faction = Faction.NEUTRAL;
-    cost: number = 0;
-    paidCost: number = 0;
-    progress: number = 0;
-    speed: number = 0.4;
-    // 是否到达目的地
-    reached: boolean = false;
-    active: boolean = true;
-    retracting: boolean = false;
-    // 双向缩回：从末端向fromPlanet方向缩回
-    retractFromEnd: boolean = false;
-    retractProgressFromEnd: number = 0;
-    // 缩回时返还资源的目标星球ID和待返还量
-    retractRefundPlanetId: number = 0;
-    retractRefundCost: number = 0;
-    // 碰撞对峙：与敌对势力的反向连接碰撞，各自只占一半
-    collided: boolean = false;
-    collidedProgress: number = 0.5; // 碰撞后允许的最大进度（对峙位置）
-    // 对峙的配对连接ID
-    pairedConnId: number = -1;
-    // 被顶回的目标进度（渐变缩回，非瞬间跳转）
-    pushBackTarget: number = -1; // -1 表示未被顶回
-    node: Node | null = null;
-    pulseTime: number = 0;
-}
-
-// ===================== 攻击波数据 =====================
-export class AttackWave {
-    fromPlanetId: number = 0;
-    toPlanetId: number = 0;
-    faction: Faction = Faction.NEUTRAL;
-    amount: number = 0;
-    pos: Vec2 = new Vec2();
-    speed: number = 180;
-    node: Node | null = null;
-    done: boolean = false;
-    // 碰撞对峙攻击波：目标是对峙点而非敌方星球
-    isCollidedWave: boolean = false;
-    collidedTarget: Vec2 | null = null;
-    collidedConnId: number = -1;
-}
-
-// ===================== 星空背景粒子 =====================
-class StarParticle {
-    x: number = 0;
-    y: number = 0;
-    brightness: number = 0.5;
-    size: number = 1;
-    twinkleSpeed: number = 1;
-    twinkleOffset: number = 0;
-}
-
+/**
+ * GameManager - 游戏核心编排器
+ *
+ * 职责：关卡加载、游戏状态、连接生命周期、攻击波、主循环；
+ * 渲染委托给各 View 类（PlanetView/ConnectionView/AttackWaveView/Starfield/ResultPanel），
+ * 输入委托给 TouchController，敌方决策委托给 AIController。
+ *
+ * 组件间通信（director 事件）：
+ *  - 'start_level'（载荷 levelId）：菜单 → 本类，启动关卡
+ *  - 'show_menu'：本类 → 菜单，返回主菜单
+ */
 @ccclass('GameManager')
 export class GameManager extends Component {
 
-    // ==================== 游戏配置（从关卡数据覆盖） ====================
-    private CONNECTION_COST_PER_UNIT = 0.1;
-    private ATTACK_INTERVAL = 1.2;
-    private GROW_INTERVAL = 0.5;
-    private ATTACK_DAMAGE_RATIO = 1.0;
-    private SEND_RATIO = 0.25;
-    private AI_INTERVAL = 3.5;
-    private readonly SWIPE_CUT_DISTANCE = 22;
-    private readonly DOUBLE_CLICK_TIME = 0.35;
-
-    private canvasWidth = 1280;
-    private canvasHeight = 720;
+    // ==================== 关卡配置（加载关卡时覆盖） ====================
+    private attackInterval = 1.2;
+    private sendRatio = 0.25;
 
     // ==================== 游戏状态 ====================
     private planets: PlanetData[] = [];
@@ -142,90 +57,102 @@ export class GameManager extends Component {
     private nextPlanetId = 0;
     private nextConnectionId = 0;
     private gameOver = false;
-    private gameResult: GameResult = GameResult.NONE;
-    private initialized = false;
+    private isGameActive = false;
     private currentLevelData: LevelData | null = null;
 
     private growTimer = 0;
     private attackTimer = 0;
-    private aiTimer = 0;
     private totalTime = 0;
     private gameStartTime = 0;
 
     // ==================== 交互状态 ====================
-    private selectedPlanet: PlanetData | null = null;
-    private isDragging = false;
-    private isSwipeMode = false;
-    private swipePrevPos: Vec2 = new Vec2();
-    private swipeCutTargetIds: Set<number> = new Set();
-    private swipeCutCooldowns: Map<number, number> = new Map();
-    private dragLineNode: Node | null = null;
-    private dragLineGraphics: Graphics | null = null;
-    private lastClickTime = 0;
+    private cutHighlightId = -1;
 
-    // ==================== UI 节点 ====================
-    private canvas: Node | null = null;
+    // ==================== 层级与子系统 ====================
+    private canvasUITransform: UITransform | null = null;
     private gameLayer: Node | null = null;
     private connectionLayer: Node | null = null;
     private attackLayer: Node | null = null;
     private uiLayer: Node | null = null;
+    private bgNode: Node | null = null;
     private statusLabel: Label | null = null;
     private levelLabel: Label | null = null;
-    private bgGraphics: Graphics | null = null;
-    private starParticles: StarParticle[] = [];
-
-    // ==================== 结果界面 ====================
-    private resultLayer: Node | null = null;
-    private resultTitleLabel: Label | null = null;
-    private resultDescLabel: Label | null = null;
-    private nextLevelBtn: Node | null = null;
-    private backMenuBtn: Node | null = null;
-    private restartBtn: Node | null = null;
-    private bgNode: Node | null = null;
-    private isGameActive = false;
+    private starfield: Starfield | null = null;
+    private resultPanel: ResultPanel | null = null;
+    private touch: TouchController | null = null;
+    private readonly ai = new AIController();
+    private readonly aiDelegate = {
+        getPlanets: () => this.planets,
+        getConnections: () => this.connections,
+        createConnection: (from: PlanetData, to: PlanetData) => this.tryCreateConnection(from, to, true),
+        breakConnection: (conn: ConnectionData) => this.breakConnection(conn),
+    };
 
     start() {
-        this.doInit();
-    }
-
-    private doInit() {
-        if (this.initialized) return;
-        this.initialized = true;
-
-        this.findCanvas();
-        this.updateCanvasSize();
-        this.ensureCanvasComponents();
+        this.setupCanvas();
         this.initLayers();
-        this.initStarfield();
-        this.initResultLayer();
-        this.setupInput();
-        this.setupLevelListener();
-
-        // 默认隐藏游戏层（等待菜单触发）
+        this.touch = new TouchController(this.node, this.canvasUITransform!, this.createTouchDelegate(), this.connectionLayer!);
+        this.touch.attach();
+        director.on('start_level', this.onStartLevel, this);
+        director.on('show_menu', this.onShowMenu, this);
         this.setGameLayerVisible(false);
-
-        // 加载当前关卡
-        this.loadLevel(GameState.currentLevel || 1);
     }
 
-    // ==================== 监听菜单开始关卡事件 ====================
-    private setupLevelListener() {
-        director.on('start_level', this.onDirectorStartLevel, this);
-        director.on('menu_show', this.onDirectorMenuShow, this);
+    // ==================== Canvas / 层级初始化 ====================
+    private setupCanvas() {
+        let canvas: Node | null = this.node.name === 'Canvas' ? this.node : find('Canvas');
+        if (!canvas) canvas = this.node;
+        this.canvasUITransform = setupPortraitCanvas(canvas);
+        if (!this.node.getComponent(UITransform)) {
+            this.node.addComponent(UITransform).setContentSize(DESIGN_WIDTH, DESIGN_HEIGHT);
+        }
     }
 
-    private onDirectorStartLevel(levelId: number) {
+    private initLayers() {
+        const canvas = this.canvasUITransform!.node;
+
+        // 背景层（星空）
+        this.bgNode = createUINode('Background', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+        this.starfield = new Starfield(this.bgNode.addComponent(Graphics), DESIGN_WIDTH, DESIGN_HEIGHT, 120);
+
+        // 连接层（连接线 + 拖拽预览线，由 TouchController 管理预览）
+        this.connectionLayer = createUINode('ConnectionLayer', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+
+        // 游戏层（星球）
+        this.gameLayer = createUINode('GameLayer', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+
+        // 攻击波层
+        this.attackLayer = createUINode('AttackLayer', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+
+        // UI 层
+        this.uiLayer = createUINode('UILayer', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+        this.levelLabel = createLabel(this.uiLayer, 'LevelLabel', '', 20, new Color(100, 200, 255, 200), 600, 30);
+        this.levelLabel.node.setPosition(0, DESIGN_HEIGHT / 2 - 30, 0);
+        this.statusLabel = createLabel(this.uiLayer, 'StatusLabel', '', 16, new Color(220, 220, 255, 180), 800, 40);
+        this.statusLabel.node.setPosition(0, DESIGN_HEIGHT / 2 - 60, 0);
+
+        // 结算面板
+        this.resultPanel = new ResultPanel(canvas, this, {
+            onNext: () => this.goNextLevel(),
+            onRestart: () => this.restartCurrentLevel(),
+            onMenu: () => director.emit('show_menu'),
+        });
+    }
+
+    // ==================== 事件 ====================
+    private onStartLevel(levelId: number) {
         this.loadLevel(levelId);
     }
 
-    private onDirectorMenuShow() {
+    private onShowMenu() {
         this.setGameLayerVisible(false);
         this.isGameActive = false;
+        if (this.touch) this.touch.enabled = false;
     }
 
     // ==================== 加载关卡 ====================
     public loadLevel(levelId: number) {
-        const levelData = GameState.getLevelData(levelId);
+        const levelData = getLevelData(levelId);
         if (!levelData) {
             this.setStatus('关卡数据未找到！');
             return;
@@ -235,50 +162,38 @@ export class GameManager extends Component {
         this.currentLevelData = levelData;
         GameState.currentLevel = levelId;
 
-        // 应用关卡配置
-        this.ATTACK_INTERVAL = levelData.attackInterval;
-        this.SEND_RATIO = levelData.sendRatio;
-        this.AI_INTERVAL = levelData.aiInterval;
+        this.attackInterval = levelData.attackInterval!;
+        this.sendRatio = levelData.sendRatio!;
+        this.ai.interval = levelData.aiInterval!;
 
-        // 显示关卡信息
-        if (this.levelLabel) {
-            this.levelLabel.string = `第 ${levelData.id} 关 - ${levelData.name}`;
-        }
-        this.setStatus(levelData.description);
+        if (this.levelLabel) this.levelLabel.string = `第 ${levelData.id} 关 - ${levelData.name}`;
+        this.setStatus(levelData.description!);
 
-        // 创建星球
         for (const cfg of levelData.planets) {
             const data = new PlanetData();
             data.id = this.nextPlanetId++;
-            data.pos = new Vec2(cfg.x, cfg.y);
+            // 归一化坐标 → 竖屏逻辑坐标
+            data.pos.set(cfg.nx * HALF_EXTENT_X, cfg.ny * HALF_EXTENT_Y);
             data.radius = 22 + cfg.maxPopulation * 0.35;
             data.faction = cfg.faction;
             data.population = cfg.population;
             data.maxPopulation = cfg.maxPopulation;
-            data.growRate = cfg.growRate !== undefined ? cfg.growRate : (cfg.faction === Faction.NEUTRAL ? 0.8 : 1.5);
-            data.overflowPool = 0;
-            this.createPlanetNode(data);
+            data.growRate = cfg.growRate ?? (cfg.faction === Faction.NEUTRAL ? 0.8 : 1.5);
+            PlanetView.create(this.gameLayer!, data);
             this.planets.push(data);
         }
 
         this.gameStartTime = this.totalTime;
-        this.gameOver = false;
-        this.gameResult = GameResult.NONE;
         this.isGameActive = true;
+        if (this.touch) this.touch.enabled = true;
         this.setGameLayerVisible(true);
     }
 
     // ==================== 清理游戏 ====================
     private clearGame() {
-        for (const conn of this.connections) {
-            if (conn.node) conn.node.destroy();
-        }
-        for (const wave of this.attackWaves) {
-            if (wave.node) wave.node.destroy();
-        }
-        for (const planet of this.planets) {
-            if (planet.node) planet.node.destroy();
-        }
+        for (const conn of this.connections) conn.view?.destroy();
+        for (const wave of this.attackWaves) wave.view?.destroy();
+        for (const planet of this.planets) planet.view?.destroy();
 
         this.planets = [];
         this.connections = [];
@@ -286,596 +201,68 @@ export class GameManager extends Component {
         this.nextPlanetId = 0;
         this.nextConnectionId = 0;
         this.gameOver = false;
-        this.gameResult = GameResult.NONE;
-        this.restartEnabled = false;
+        this.cutHighlightId = -1;
         this.growTimer = 0;
         this.attackTimer = 0;
-        this.aiTimer = 0;
-
-        if (this.resultLayer) {
-            this.resultLayer.active = false;
-        }
+        this.ai.reset();
+        this.resultPanel?.hide();
     }
 
-    // ==================== 查找 Canvas ====================
-    private findCanvas() {
-        if (this.node.name === 'Canvas') {
-            this.canvas = this.node;
-            return;
-        }
-        this.canvas = find('Canvas');
-        if (!this.canvas) {
-            this.canvas = this.node;
-        }
+    // ==================== 触摸/AI 委托 ====================
+    private createTouchDelegate() {
+        return {
+            pickPlanet: (pos: Vec2) => this.pickPlanet(pos),
+            getPlanets: () => this.planets,
+            getConnections: () => this.connections,
+            createConnection: (from: PlanetData, to: PlanetData) => this.tryCreateConnection(from, to, false),
+            cutConnection: (conn: ConnectionData, cutPos: Vec2) => this.breakConnection(conn, cutPos),
+            reportStatus: (text: string) => this.setStatus(text),
+            setCutHighlight: (connId: number) => { this.cutHighlightId = connId; },
+        };
     }
 
-    private updateCanvasSize() {
-        if (this.canvas) {
-            const uiTransform = this.canvas.getComponent(UITransform);
-            if (uiTransform) {
-                this.canvasWidth = uiTransform.contentSize.width;
-                this.canvasHeight = uiTransform.contentSize.height;
-            }
-        }
-    }
-
-    private ensureCanvasComponents() {
-        if (!this.canvas) return;
-        if (!this.node.getComponent(UITransform)) {
-            this.node.addComponent(UITransform).setContentSize(new Size(this.canvasWidth, this.canvasHeight));
-        }
-    }
-
-    // ==================== 初始化层级 ====================
-    private initLayers() {
-        const w = this.canvasWidth;
-        const h = this.canvasHeight;
-
-        // 背景层
-        const bgNode = new Node('Background');
-        bgNode.addComponent(UITransform).setContentSize(new Size(w, h));
-        this.bgGraphics = bgNode.addComponent(Graphics);
-        this.bgNode = bgNode;
-        this.canvas!.addChild(bgNode);
-
-        // 连接层
-        this.connectionLayer = new Node('ConnectionLayer');
-        this.connectionLayer.addComponent(UITransform).setContentSize(new Size(w, h));
-        this.canvas!.addChild(this.connectionLayer);
-
-        // 拖拽线
-        this.dragLineNode = new Node('DragLine');
-        this.dragLineNode.addComponent(UITransform).setContentSize(new Size(w, h));
-        this.dragLineGraphics = this.dragLineNode.addComponent(Graphics);
-        this.connectionLayer!.addChild(this.dragLineNode);
-
-        // 游戏层(星球)
-        this.gameLayer = new Node('GameLayer');
-        this.gameLayer.addComponent(UITransform).setContentSize(new Size(w, h));
-        this.canvas!.addChild(this.gameLayer);
-
-        // 攻击波层
-        this.attackLayer = new Node('AttackLayer');
-        this.attackLayer.addComponent(UITransform).setContentSize(new Size(w, h));
-        this.canvas!.addChild(this.attackLayer);
-
-        // UI层
-        this.uiLayer = new Node('UILayer');
-        this.uiLayer.addComponent(UITransform).setContentSize(new Size(w, h));
-        this.canvas!.addChild(this.uiLayer);
-
-        // 关卡标题
-        const levelNode = new Node('LevelLabel');
-        levelNode.addComponent(UITransform).setContentSize(new Size(600, 30));
-        this.levelLabel = levelNode.addComponent(Label);
-        this.levelLabel.string = '';
-        this.levelLabel.fontSize = 20;
-        this.levelLabel.color = new Color(100, 200, 255, 200);
-        this.levelLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
-        levelNode.setPosition(0, h / 2 - 30, 0);
-        this.uiLayer!.addChild(levelNode);
-
-        // 状态标签
-        const statusNode = new Node('StatusLabel');
-        statusNode.addComponent(UITransform).setContentSize(new Size(800, 40));
-        this.statusLabel = statusNode.addComponent(Label);
-        this.statusLabel.string = '';
-        this.statusLabel.fontSize = 16;
-        this.statusLabel.color = new Color(220, 220, 255, 180);
-        this.statusLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
-        statusNode.setPosition(0, h / 2 - 60, 0);
-        this.uiLayer!.addChild(statusNode);
-    }
-
-    // ==================== 初始化结果界面 ====================
-    private initResultLayer() {
-        const w = this.canvasWidth;
-        const h = this.canvasHeight;
-
-        this.resultLayer = new Node('ResultLayer');
-        this.resultLayer.addComponent(UITransform).setContentSize(new Size(w, h));
-        this.canvas!.addChild(this.resultLayer);
-        this.resultLayer.active = false;
-
-        // 半透明遮罩
-        const maskGNode = new Node('Mask');
-        maskGNode.addComponent(UITransform).setContentSize(new Size(w, h));
-        const maskG = maskGNode.addComponent(Graphics);
-        maskG.fillColor = new Color(0, 0, 0, 160);
-        maskG.rect(-w / 2, -h / 2, w, h);
-        maskG.fill();
-        this.resultLayer.addChild(maskGNode);
-
-        // 结果面板
-        const panelW = 500;
-        const panelH = 350;
-        const panelNode = new Node('Panel');
-        panelNode.addComponent(UITransform).setContentSize(new Size(panelW, panelH));
-        const panelG = panelNode.addComponent(Graphics);
-        panelG.fillColor = new Color(10, 20, 50, 230);
-        panelG.roundRect(-panelW / 2, -panelH / 2, panelW, panelH, 20);
-        panelG.fill();
-        panelG.strokeColor = new Color(80, 160, 255, 200);
-        panelG.lineWidth = 2;
-        panelG.roundRect(-panelW / 2, -panelH / 2, panelW, panelH, 20);
-        panelG.stroke();
-        this.resultLayer.addChild(panelNode);
-
-        // 结果标题
-        const titleNode = new Node('ResultTitle');
-        titleNode.addComponent(UITransform).setContentSize(new Size(panelW, 50));
-        this.resultTitleLabel = titleNode.addComponent(Label);
-        this.resultTitleLabel.string = '';
-        this.resultTitleLabel.fontSize = 36;
-        this.resultTitleLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
-        titleNode.setPosition(0, 100, 0);
-        this.resultLayer.addChild(titleNode);
-
-        // 结果描述
-        const descNode = new Node('ResultDesc');
-        descNode.addComponent(UITransform).setContentSize(new Size(panelW - 40, 40));
-        this.resultDescLabel = descNode.addComponent(Label);
-        this.resultDescLabel.string = '';
-        this.resultDescLabel.fontSize = 16;
-        this.resultDescLabel.color = new Color(180, 200, 230, 200);
-        this.resultDescLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
-        descNode.setPosition(0, 50, 0);
-        this.resultLayer.addChild(descNode);
-
-        // 按钮
-        this.nextLevelBtn = this.createResultButton('下一关', 200, 45, 20);
-        this.nextLevelBtn.setPosition(0, -20, 0);
-        this.resultLayer.addChild(this.nextLevelBtn);
-
-        this.restartBtn = this.createResultButton('重新挑战', 200, 45, 20);
-        this.restartBtn.setPosition(-115, -85, 0);
-        this.resultLayer.addChild(this.restartBtn);
-
-        this.backMenuBtn = this.createResultButton('返回菜单', 200, 45, 20);
-        this.backMenuBtn.setPosition(115, -85, 0);
-        this.resultLayer.addChild(this.backMenuBtn);
-    }
-
-    // ==================== 创建结果界面按钮 ====================
-    private createResultButton(text: string, width: number, height: number, fontSize: number): Node {
-        const btnNode = new Node('Btn_' + text);
-        btnNode.addComponent(UITransform).setContentSize(new Size(width, height));
-
-        const gNode = new Node('Graphics');
-        gNode.addComponent(UITransform).setContentSize(new Size(width, height));
-        const g = gNode.addComponent(Graphics);
-        const cornerR = height / 2;
-        g.fillColor = new Color(20, 60, 120, 200);
-        g.roundRect(-width / 2, -height / 2, width, height, cornerR);
-        g.fill();
-        g.strokeColor = new Color(80, 160, 255, 200);
-        g.lineWidth = 2;
-        g.roundRect(-width / 2, -height / 2, width, height, cornerR);
-        g.stroke();
-        btnNode.addChild(gNode);
-
-        const labelNode = new Node('Label');
-        labelNode.addComponent(UITransform).setContentSize(new Size(width, height));
-        const label = labelNode.addComponent(Label);
-        label.string = text;
-        label.fontSize = fontSize;
-        label.color = new Color(220, 235, 255, 255);
-        label.horizontalAlign = Label.HorizontalAlign.CENTER;
-        label.verticalAlign = Label.VerticalAlign.CENTER;
-        btnNode.addChild(labelNode);
-
-        return btnNode;
-    }
-
-    // ==================== 显示游戏结果 ====================
-    private showResult(result: GameResult) {
-        if (!this.resultLayer) return;
-        this.resultLayer.active = true;
-
-        const hasMoreLevels = this.currentLevelData && GameState.getLevelData(this.currentLevelData.id + 1);
-
-        if (result === GameResult.WIN) {
-            if (this.resultTitleLabel) {
-                this.resultTitleLabel.string = '胜利！';
-                this.resultTitleLabel.color = new Color(80, 255, 120, 255);
-            }
-            if (this.resultDescLabel) {
-                const elapsed = Math.floor(this.totalTime - this.gameStartTime);
-                this.resultDescLabel.string = `耗时 ${elapsed} 秒占领了所有敌方星球！`;
-            }
-            // 解锁下一关
-            if (this.currentLevelData) {
-                GameState.unlockedLevel = this.currentLevelData.id + 1;
-                GameState.setHighScore(this.currentLevelData.id, Math.floor(this.totalTime - this.gameStartTime));
-            }
-            if (this.nextLevelBtn) {
-                this.nextLevelBtn.active = !!hasMoreLevels;
-            }
-        } else {
-            if (this.resultTitleLabel) {
-                this.resultTitleLabel.string = '失败';
-                this.resultTitleLabel.color = new Color(255, 80, 80, 255);
-            }
-            if (this.resultDescLabel) {
-                this.resultDescLabel.string = '你的所有星球已被占领...';
-            }
-            if (this.nextLevelBtn) {
-                this.nextLevelBtn.active = false;
-            }
-        }
-    }
-
-    // ==================== 初始化星空 ====================
-    private initStarfield() {
-        for (let i = 0; i < 120; i++) {
-            const star = new StarParticle();
-            star.x = (Math.random() - 0.5) * this.canvasWidth;
-            star.y = (Math.random() - 0.5) * this.canvasHeight;
-            star.brightness = 0.3 + Math.random() * 0.7;
-            star.size = 0.5 + Math.random() * 2;
-            star.twinkleSpeed = 1 + Math.random() * 3;
-            star.twinkleOffset = Math.random() * Math.PI * 2;
-            this.starParticles.push(star);
-        }
-    }
-
-    // ==================== 绘制背景 ====================
-    private drawBackground(time: number) {
-        if (!this.bgGraphics) return;
-        this.bgGraphics.clear();
-
-        this.bgGraphics.fillColor = new Color(5, 5, 25, 255);
-        this.bgGraphics.rect(-this.canvasWidth / 2, -this.canvasHeight / 2, this.canvasWidth, this.canvasHeight);
-        this.bgGraphics.fill();
-
-        for (const star of this.starParticles) {
-            const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(time * star.twinkleSpeed + star.twinkleOffset));
-            const alpha = Math.floor(star.brightness * twinkle * 255);
-            this.bgGraphics.fillColor = new Color(200, 210, 255, alpha);
-            this.bgGraphics.circle(star.x, star.y, star.size);
-            this.bgGraphics.fill();
-        }
-    }
-
-    // ==================== 创建星球节点 ====================
-    private createPlanetNode(data: PlanetData) {
-        const node = new Node(`Planet_${data.id}`);
-        node.addComponent(UITransform).setContentSize(new Size(data.radius * 2.5, data.radius * 2.5));
-        node.setPosition(data.pos.x, data.pos.y, 0);
-        this.gameLayer!.addChild(node);
-
-        const gNode = new Node('Graphics');
-        gNode.addComponent(UITransform).setContentSize(new Size(data.radius * 3, data.radius * 3));
-        const g = gNode.addComponent(Graphics);
-        node.addChild(gNode);
-
-        data.node = node;
-        data.graphicsNode = gNode;
-
-        const lNode = new Node('PopLabel');
-        lNode.addComponent(UITransform).setContentSize(new Size(80, 30));
-        const label = lNode.addComponent(Label);
-        label.string = Math.floor(data.population).toString();
-        label.fontSize = 16;
-        label.color = Color.WHITE;
-        label.horizontalAlign = Label.HorizontalAlign.CENTER;
-        lNode.setPosition(0, data.radius + 18, 0);
-        node.addChild(lNode);
-        data.labelNode = lNode;
-
-        this.drawPlanet(g, data, 0);
-    }
-
-    // ==================== 绘制星球 ====================
-    private drawPlanet(g: Graphics, data: PlanetData, time: number) {
-        g.clear();
-        const r = data.radius;
-        const color = FACTION_COLORS[data.faction];
-        const colorDark = FACTION_COLORS_DARK[data.faction];
-
-        const pulse = 1 + Math.sin(time * 2 + data.id) * 0.02;
-        const pr = r * pulse;
-
-        g.strokeColor = new Color(color.r, color.g, color.b, 60);
-        g.lineWidth = 4;
-        g.circle(0, 0, pr + 6);
-        g.stroke();
-
-        g.strokeColor = new Color(color.r, color.g, color.b, 30);
-        g.lineWidth = 2;
-        g.circle(0, 0, pr + 10);
-        g.stroke();
-
-        g.fillColor = colorDark;
-        g.circle(0, 0, pr);
-        g.fill();
-
-        g.fillColor = color;
-        g.circle(0, 0, pr * 0.7);
-        g.fill();
-
-        g.fillColor = new Color(
-            Math.min(255, color.r + 80),
-            Math.min(255, color.g + 80),
-            Math.min(255, color.b + 80),
-            150
-        );
-        g.circle(-pr * 0.15, pr * 0.15, pr * 0.25);
-        g.fill();
-
-        const popRatio = Math.max(0, Math.min(1, data.population / data.maxPopulation));
-        g.strokeColor = new Color(255, 255, 255, 80);
-        g.lineWidth = 2;
-        g.circle(0, 0, pr + 2);
-        g.stroke();
-
-        g.strokeColor = new Color(80, 255, 120, 200);
-        g.lineWidth = 3;
-        const startAngle = -Math.PI / 2;
-        const endAngle = startAngle + popRatio * Math.PI * 2;
-        if (popRatio > 0.01) {
-            g.arc(0, 0, pr + 2, startAngle, endAngle, false);
-            g.stroke();
-        }
-
-        g.fillColor = color;
-        g.circle(0, -pr - 8, 3);
-        g.fill();
-    }
-
-    // ==================== 更新星球显示 ====================
-    private updatePlanetDisplay(data: PlanetData, time: number = 0) {
-        if (data.labelNode) {
-            const label = data.labelNode.getComponent(Label);
-            if (label) {
-                label.string = Math.floor(data.population).toString();
-            }
-        }
-        if (data.graphicsNode) {
-            const g = data.graphicsNode.getComponent(Graphics);
-            if (g) {
-                this.drawPlanet(g, data, time);
-            }
-        }
-    }
-
-    // ==================== 设置输入 ====================
-    private setupInput() {
-        this.node.on(Input.EventType.TOUCH_START, this.onTouchStart, this);
-        this.node.on(Input.EventType.TOUCH_MOVE, this.onTouchMove, this);
-        this.node.on(Input.EventType.TOUCH_END, this.onTouchEnd, this);
-        this.node.on(Input.EventType.TOUCH_CANCEL, this.onTouchCancel, this);
-    }
-
-    // ==================== 获取点击的星球 ====================
-    private getPlanetAtPos(pos: Vec2): PlanetData | null {
+    private pickPlanet(pos: Vec2): PlanetData | null {
         for (const planet of this.planets) {
-            const dist = Vec2.distance(pos, planet.pos);
-            if (dist <= planet.radius + 8) {
-                return planet;
-            }
+            const dx = pos.x - planet.pos.x;
+            const dy = pos.y - planet.pos.y;
+            const r = planet.radius + 8;
+            if (dx * dx + dy * dy <= r * r) return planet;
         }
         return null;
     }
 
-    // ==================== 触摸开始 ====================
-    private onTouchStart(event: EventTouch) {
-        // 结果界面按钮处理
-        if (this.gameOver && this.resultLayer && this.resultLayer.active) {
-            const pos = this.screenToLocal(event.getUILocation());
-            if (this.isInsideNode(pos, this.nextLevelBtn) && this.nextLevelBtn && this.nextLevelBtn.active) {
-                this.goNextLevel();
-                return;
-            }
-            if (this.isInsideNode(pos, this.restartBtn)) {
-                this.restartCurrentLevel();
-                return;
-            }
-            if (this.isInsideNode(pos, this.backMenuBtn)) {
-                this.backToMenu();
-                return;
-            }
-            return;
-        }
-
-        if (this.gameOver) return;
-
-        const pos = this.screenToLocal(event.getUILocation());
-        const planet = this.getPlanetAtPos(pos);
-
-        if (planet && planet.faction === Faction.PLAYER) {
-            this.selectedPlanet = planet;
-            this.isDragging = true;
-            this.isSwipeMode = false;
-        } else {
-            this.isSwipeMode = true;
-            this.isDragging = false;
-            this.selectedPlanet = null;
-            this.swipePrevPos = pos.clone();
-            this.swipeCutTargetIds.clear();
-        }
-    }
-
-    // ==================== 触摸移动 ====================
-    private onTouchMove(event: EventTouch) {
-        if (this.gameOver) return;
-
-        const pos = this.screenToLocal(event.getUILocation());
-
-        if (this.isDragging && this.selectedPlanet) {
-            if (this.dragLineGraphics) {
-                this.dragLineGraphics.clear();
-
-                const dist = Vec2.distance(this.selectedPlanet.pos, pos);
-
-                const cost = dist * this.CONNECTION_COST_PER_UNIT;
-                const canAfford = this.selectedPlanet.population > cost + 2;
-                const canStart = this.selectedPlanet.population > 1;
-                if (!canStart) {
-                    this.dragLineGraphics.strokeColor = new Color(255, 50, 50, 120);
-                } else {
-                    this.dragLineGraphics.strokeColor = canAfford
-                        ? new Color(80, 180, 255, 180)
-                        : new Color(255, 160, 50, 180);
-                }
-
-
-                this.dragLineGraphics.lineWidth = 3;
-                this.dragLineGraphics.moveTo(this.selectedPlanet.pos.x, this.selectedPlanet.pos.y);
-                this.dragLineGraphics.lineTo(pos.x, pos.y);
-                this.dragLineGraphics.stroke();
-
-                for (const planet of this.planets) {
-                    if (planet.id === this.selectedPlanet.id) continue;
-                    const pDist = Vec2.distance(pos, planet.pos);
-                    if (pDist <= planet.radius + 12) {
-                        this.dragLineGraphics.strokeColor = new Color(255, 255, 255, 180);
-                        this.dragLineGraphics.lineWidth = 2;
-                        this.dragLineGraphics.circle(planet.pos.x, planet.pos.y, planet.radius + 10);
-                        this.dragLineGraphics.stroke();
-                    }
-                }
-            }
-            return;
-        }
-
-        if (this.isSwipeMode) {
-            if (this.dragLineGraphics) {
-                this.dragLineGraphics.clear();
-
-                this.dragLineGraphics.strokeColor = new Color(255, 100, 100, 200);
-                this.dragLineGraphics.lineWidth = 3;
-                this.dragLineGraphics.moveTo(this.swipePrevPos.x, this.swipePrevPos.y);
-                this.dragLineGraphics.lineTo(pos.x, pos.y);
-                this.dragLineGraphics.stroke();
-
-                const midX = (this.swipePrevPos.x + pos.x) / 2;
-                const midY = (this.swipePrevPos.y + pos.y) / 2;
-                for (let i = 0; i < 3; i++) {
-                    const offX = (Math.random() - 0.5) * 12;
-                    const offY = (Math.random() - 0.5) * 12;
-                    this.dragLineGraphics.fillColor = new Color(255, 180, 80, 160);
-                    this.dragLineGraphics.circle(midX + offX, midY + offY, 1.5);
-                    this.dragLineGraphics.fill();
-                }
-
-                const toBreakNow: { conn: ConnectionData; cutPos: Vec2 }[] = [];
-                for (const conn of this.connections) {
-                    if (!conn.active) continue;
-                    if (this.swipeCutCooldowns.has(conn.id)) continue;
-                    const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
-                    const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
-
-                    const dist = this.segmentToSegmentDistance(
-                        this.swipePrevPos, pos,
-                        fromPlanet.pos, toPlanet.pos
-                    );
-
-                    if (dist <= this.SWIPE_CUT_DISTANCE) {
-                        if (conn.faction === Faction.PLAYER) {
-                            const cutPoint = this.closestPointOnSegment(
-                                this.closestPointOnSegment(pos, fromPlanet.pos, toPlanet.pos),
-                                this.swipePrevPos, pos
-                            );
-                            toBreakNow.push({ conn, cutPos: cutPoint });
-                        }
-                    }
-                }
-
-                for (const item of toBreakNow) {
-                    this.breakConnection(item.conn, item.cutPos);
-                    this.swipeCutCooldowns.set(item.conn.id, 0.3);
-                }
-                if (toBreakNow.length > 0) {
-                    this.setStatus(`滑动切割！断开了 ${toBreakNow.length} 条连接`);
-                }
-            }
-
-            this.swipePrevPos = pos.clone();
-        }
-    }
-
-    // ==================== 触摸结束 ====================
-    private onTouchEnd(event: EventTouch) {
-        if (this.isDragging && this.selectedPlanet && !this.gameOver) {
-            const pos = this.screenToLocal(event.getUILocation());
-            const targetPlanet = this.getPlanetAtPos(pos);
-
-            if (targetPlanet && targetPlanet.id !== this.selectedPlanet.id) {
-                this.tryCreateConnection(this.selectedPlanet, targetPlanet);
-            }
-        }
-
-        if (this.dragLineGraphics) {
-            this.dragLineGraphics.clear();
-        }
-        this.isDragging = false;
-        this.isSwipeMode = false;
-        this.selectedPlanet = null;
-        this.swipeCutTargetIds.clear();
-    }
-
-    private onTouchCancel(event: EventTouch) {
-        if (this.dragLineGraphics) {
-            this.dragLineGraphics.clear();
-        }
-        this.isDragging = false;
-        this.selectedPlanet = null;
-    }
-
     // ==================== 尝试创建连接 ====================
-    private tryCreateConnection(from: PlanetData, to: PlanetData, silent: boolean = false) {
+    private tryCreateConnection(from: PlanetData, to: PlanetData, silent: boolean) {
         const dist = Vec2.distance(from.pos, to.pos);
 
-        const existing = this.connections.find(
-            c => c.fromPlanetId === from.id && c.toPlanetId === to.id && c.active
-        );
+        // 同方向重复连接被阻止
+        const existing = this.connections.find(c => c.fromPlanet === from && c.toPlanet === to && c.active);
         if (existing) {
             if (!silent) this.setStatus('连接已存在！');
             return;
         }
 
-        // 同阵营反向连接检测：若存在 A→B 的同阵营连接，当 B→A 发起时，启动 A→B 缩回动画并按比例动态返还资源
+        // 同阵营反向连接：缩回原连接并返还资源
         if (from.faction === to.faction) {
             const reverseConn = this.connections.find(
-                c => c.fromPlanetId === to.id && c.toPlanetId === from.id && c.active && c.faction === from.faction
+                c => c.fromPlanet === to && c.toPlanet === from && c.active && c.faction === from.faction,
             );
             if (reverseConn) {
                 this.retractConnection(reverseConn);
-                if (!silent) this.setStatus(`同阵营反向连接缩回中，资源按比例返还！`);
+                if (!silent) this.setStatus('同阵营反向连接缩回中，资源按比例返还！');
             }
         }
 
-        // 敌对势力反向连接碰撞检测：若存在敌对势力的反向连接，触发碰撞对峙
+        // 敌对势力反向连接：触发碰撞对峙
         const enemyReverseConn = this.connections.find(
-            c => c.fromPlanetId === to.id && c.toPlanetId === from.id
+            c => c.fromPlanet === to && c.toPlanet === from
                 && c.active && !c.retracting
                 && c.faction !== from.faction
                 && c.faction !== Faction.NEUTRAL
-                && from.faction !== Faction.NEUTRAL
+                && from.faction !== Faction.NEUTRAL,
         );
 
-        const cost = dist * this.CONNECTION_COST_PER_UNIT;
+        const cost = dist * TUNING.CONNECTION_COST_PER_UNIT;
 
         if (from.population <= 1) {
             if (!silent) this.setStatus('文明数量为零，无法建立连接！');
@@ -884,392 +271,175 @@ export class GameManager extends Component {
 
         const conn = new ConnectionData();
         conn.id = this.nextConnectionId++;
-        conn.fromPlanetId = from.id;
-        conn.toPlanetId = to.id;
+        conn.fromPlanet = from;
+        conn.toPlanet = to;
         conn.faction = from.faction;
         conn.cost = cost;
-        conn.paidCost = 0;
-        conn.progress = 0;
-        conn.reached = false;
-        conn.active = true;
-
-        this.createConnectionNode(conn);
+        ConnectionView.create(this.connectionLayer!, conn);
         this.connections.push(conn);
 
         if (enemyReverseConn) {
             this.handleHostileCollision(conn, enemyReverseConn);
-            if (!silent) this.setStatus(`敌对势力碰撞！两条连接形成对峙！`);
+            if (!silent) this.setStatus('敌对势力碰撞！两条连接形成对峙！');
         } else if (from.population <= cost + 2) {
             if (!silent) this.setStatus(`连接建立！文明不足，连接可能中途中断（需 ${Math.floor(cost)}）`);
-        } else {
-            if (!silent) this.setStatus(`连接建立！预计消耗文明: ${Math.floor(cost)}`);
+        } else if (!silent) {
+            this.setStatus(`连接建立！预计消耗文明: ${Math.floor(cost)}`);
         }
     }
 
-    // ==================== 处理敌对碰撞对峙 ====================
+    // ==================== 敌对碰撞对峙 ====================
     private handleHostileCollision(newConn: ConnectionData, existingConn: ConnectionData) {
-        const collisionPoint = 0.5; // 中间点
-
-        // 将先发起的连接标记为被顶回，渐变缩回到中间点
+        const point = TUNING.COLLISION_POINT;
+        // 先发起的连接渐变顶回到对峙点
         existingConn.reached = false;
-        existingConn.pushBackTarget = collisionPoint;
+        existingConn.pushBackTarget = point;
         existingConn.collided = true;
-        existingConn.collidedProgress = collisionPoint;
+        existingConn.collidedProgress = point;
         existingConn.pairedConnId = newConn.id;
-
-        // 新连接也只到中间点
+        // 新连接也只到对峙点
         newConn.collided = true;
-        newConn.collidedProgress = collisionPoint;
+        newConn.collidedProgress = point;
         newConn.pairedConnId = existingConn.id;
     }
 
-    // ==================== 创建连接节点 ====================
-    private createConnectionNode(conn: ConnectionData) {
-        const node = new Node(`Connection_${conn.id}`);
-        node.addComponent(UITransform).setContentSize(new Size(this.canvasWidth, this.canvasHeight));
-        const g = node.addComponent(Graphics);
-        this.connectionLayer!.addChild(node, -1);
-        conn.node = node;
-    }
-
-    // ==================== 绘制连接 ====================
-    private drawConnection(g: Graphics, conn: ConnectionData, fromPlanet: PlanetData, toPlanet: PlanetData) {
-        g.clear();
-        const color = FACTION_COLORS[conn.faction];
-        const dir = new Vec2(toPlanet.pos.x - fromPlanet.pos.x, toPlanet.pos.y - fromPlanet.pos.y);
-        const totalDist = dir.length();
-        if (totalDist < 1) return;
-
-        const normDir = dir.normalize();
-
-        if (conn.retracting && conn.retractFromEnd) {
-            // 双向缩回的末端段：从断开位置向 toPlanet 方向缩回
-            // retractProgressFromEnd 从 cutRatio 递增到 1，线段从断开处缩短到 toPlanet
-            const currentStart = conn.retractProgressFromEnd; // 当前缩回起始位置比例（从cutRatio向1移动）
-            const startX = fromPlanet.pos.x + normDir.x * currentStart * totalDist;
-            const startY = fromPlanet.pos.y + normDir.y * currentStart * totalDist;
-            const endX = toPlanet.pos.x;
-            const endY = toPlanet.pos.y;
-
-            g.strokeColor = new Color(color.r, color.g, color.b, 40);
-            g.lineWidth = 6;
-            g.moveTo(startX, startY);
-            g.lineTo(endX, endY);
-            g.stroke();
-
-            g.strokeColor = new Color(color.r, color.g, color.b, 180);
-            g.lineWidth = 3;
-            g.moveTo(startX, startY);
-            g.lineTo(endX, endY);
-            g.stroke();
-
-            // 箭头指向 toPlanet 方向
-            const segDist = totalDist * (1 - currentStart);
-            if (segDist > 25) {
-                const arrowSize = 10;
-                const angle = Math.atan2(normDir.y, normDir.x);
-                g.fillColor = new Color(color.r, color.g, color.b, 220);
-                g.moveTo(endX, endY);
-                g.lineTo(
-                    endX - arrowSize * Math.cos(angle - 0.35),
-                    endY - arrowSize * Math.sin(angle - 0.35)
-                );
-                g.lineTo(
-                    endX - arrowSize * Math.cos(angle + 0.35),
-                    endY - arrowSize * Math.sin(angle + 0.35)
-                );
-                g.close();
-                g.fill();
-            }
-            return;
-        }
-
-        const progressDist = conn.progress * totalDist;
-
-        const endX = fromPlanet.pos.x + normDir.x * progressDist;
-        const endY = fromPlanet.pos.y + normDir.y * progressDist;
-
-        const isHighlighted = this.swipeCutTargetIds.has(conn.id);
-        const flashAlpha = isHighlighted
-            ? (0.5 + 0.5 * Math.sin(this.totalTime * 15)) * 255
-            : 0;
-
-        if (conn.retracting) {
-            // 缩回中的连接不加额外光晕，直接用阵营颜色绘制
-        }
-
-        if (isHighlighted && !conn.retracting) {
-            g.strokeColor = new Color(255, 255, 100, flashAlpha * 0.4);
-            g.lineWidth = 16;
-            g.moveTo(fromPlanet.pos.x, fromPlanet.pos.y);
-            g.lineTo(endX, endY);
-            g.stroke();
-        }
-
-        g.strokeColor = new Color(color.r, color.g, color.b, isHighlighted ? 255 : 40);
-        g.lineWidth = conn.reached ? 10 : 6;
-        g.moveTo(fromPlanet.pos.x, fromPlanet.pos.y);
-        g.lineTo(endX, endY);
-        g.stroke();
-
-        g.strokeColor = new Color(
-            isHighlighted ? 255 : color.r,
-            isHighlighted ? 255 : color.g,
-            isHighlighted ? 100 : color.b,
-            isHighlighted ? 255 : 180
-        );
-        g.lineWidth = conn.reached ? 4 : 3;
-        g.moveTo(fromPlanet.pos.x, fromPlanet.pos.y);
-        g.lineTo(endX, endY);
-        g.stroke();
-
-        if (conn.reached) {
-            const particleCount = 3;
-            const maxT = conn.collided ? conn.collidedProgress : 1;
-            for (let i = 0; i < particleCount; i++) {
-                const t = ((this.totalTime * 0.8 + i / particleCount) % 1) * maxT;
-                const px = fromPlanet.pos.x + (toPlanet.pos.x - fromPlanet.pos.x) * t;
-                const py = fromPlanet.pos.y + (toPlanet.pos.y - fromPlanet.pos.y) * t;
-                g.fillColor = new Color(color.r, color.g, color.b, 200);
-                g.circle(px, py, 3);
-                g.fill();
-            }
-        }
-
-        if (progressDist > 25) {
-            const arrowSize = 10;
-            const angle = Math.atan2(normDir.y, normDir.x);
-            g.fillColor = new Color(color.r, color.g, color.b, 220);
-            g.moveTo(endX, endY);
-            g.lineTo(
-                endX - arrowSize * Math.cos(angle - 0.35),
-                endY - arrowSize * Math.sin(angle - 0.35)
-            );
-            g.lineTo(
-                endX - arrowSize * Math.cos(angle + 0.35),
-                endY - arrowSize * Math.sin(angle + 0.35)
-            );
-            g.close();
-            g.fill();
-        }
-
-        // 碰撞对峙末端标记：绘制碰撞光效
-        if (conn.collided && conn.reached) {
-            const pulseAlpha = 0.4 + 0.4 * Math.sin(this.totalTime * 5);
-            g.fillColor = new Color(255, 255, 200, pulseAlpha * 255);
-            g.circle(endX, endY, 6);
-            g.fill();
-
-            g.strokeColor = new Color(255, 200, 100, pulseAlpha * 200);
-            g.lineWidth = 1.5;
-            g.circle(endX, endY, 8 + Math.sin(this.totalTime * 3) * 2);
-            g.stroke();
-
-            // 碰撞火花粒子
-            for (let i = 0; i < 3; i++) {
-                const sparkAngle = this.totalTime * 4 + i * Math.PI * 2 / 3;
-                const sparkDist = 10 + Math.sin(this.totalTime * 6 + i) * 4;
-                const sparkX = endX + Math.cos(sparkAngle) * sparkDist;
-                const sparkY = endY + Math.sin(sparkAngle) * sparkDist;
-                g.fillColor = new Color(255, 220, 100, 150 + Math.sin(this.totalTime * 8 + i) * 100);
-                g.circle(sparkX, sparkY, 1.5);
-                g.fill();
-            }
-        }
-    }
-
-    // ==================== 撤回连接（启动缩回动画，按比例动态返还资源） ====================
-    private retractConnection(conn: ConnectionData) {
-        if (!conn.active) return;
-        if (conn.retracting) return;
-        conn.retracting = true;
-        conn.retractFromEnd = false;
-        conn.retractProgressFromEnd = 0;
-        conn.retractRefundPlanetId = 0;
-        conn.retractRefundCost = 0;
-
-        // 如果该连接处于碰撞对峙状态，恢复配对连接为正常连接
-        if (conn.collided && conn.pairedConnId >= 0) {
-            const pairedConn = this.connections.find(c => c.id === conn.pairedConnId && c.active);
-            if (pairedConn) {
-                pairedConn.collided = false;
-                pairedConn.collidedProgress = 1;
-                pairedConn.pairedConnId = -1;
-                pairedConn.pushBackTarget = -1;
-                // 如果配对连接已经到达对峙点，需要重新设置reached状态让它可以继续延伸
-                if (pairedConn.reached && pairedConn.progress < 1) {
-                    pairedConn.reached = false;
-                }
+    /** 解除碰撞配对：一方退出对峙时，另一方恢复延伸至全长 */
+    private releaseCollisionPair(conn: ConnectionData) {
+        if (!conn.collided || conn.pairedConnId < 0) return;
+        const paired = this.connections.find(c => c.id === conn.pairedConnId && c.active);
+        if (paired) {
+            paired.collided = false;
+            paired.collidedProgress = 1;
+            paired.pairedConnId = -1;
+            paired.pushBackTarget = -1;
+            if (paired.reached && paired.progress < 1) {
+                paired.reached = false;
             }
         }
         conn.collided = false;
         conn.pairedConnId = -1;
         conn.pushBackTarget = -1;
+    }
 
-        // 清除该连接已发出但未到达的攻击波
+    // ==================== 撤回连接（缩回动画，按比例动态返还资源） ====================
+    private retractConnection(conn: ConnectionData) {
+        if (!conn.active || conn.retracting) return;
+        conn.retracting = true;
+        conn.retractFromEnd = false;
+        conn.retractProgressFromEnd = 0;
+        conn.retractRefundPlanet = null;
+        conn.retractRefundCost = 0;
+        this.releaseCollisionPair(conn);
         this.removeAttackWavesForConnection(conn);
     }
 
-    // ==================== 清除连接相关的攻击波 ====================
+    /** 清除该连接已发出但未到达的攻击波 */
     private removeAttackWavesForConnection(conn: ConnectionData) {
-        for (let i = this.attackWaves.length - 1; i >= 0; i--) {
-            const wave = this.attackWaves[i];
+        for (const wave of this.attackWaves) {
             if (wave.done) continue;
-            // 匹配同方向、同阵营的攻击波（普通攻击波或碰撞对峙攻击波）
-            if (wave.fromPlanetId === conn.fromPlanetId
-                && wave.toPlanetId === conn.toPlanetId
-                && wave.faction === conn.faction) {
-                // 对碰撞对峙攻击波，还需匹配连接ID
+            if (wave.fromPlanet === conn.fromPlanet && wave.toPlanet === conn.toPlanet && wave.faction === conn.faction) {
                 if (wave.isCollidedWave && wave.collidedConnId !== conn.id) continue;
                 wave.done = true;
-                if (wave.node) wave.node.destroy();
             }
         }
     }
 
-    // ==================== 断开连接 ====================
+    // ==================== 断开连接（滑动切割 / AI 清理） ====================
     public breakConnection(conn: ConnectionData, cutPos?: Vec2) {
-        if (!conn.active) return;
+        if (!conn.active || conn.retracting) return;
 
-        // 已在缩回中的连接无需再处理
-        if (conn.retracting) return;
+        this.releaseCollisionPair(conn);
 
-        // 碰撞对峙的连接断开时，恢复配对连接
-        if (conn.collided && conn.pairedConnId >= 0) {
-            const pairedConn = this.connections.find(c => c.id === conn.pairedConnId && c.active);
-            if (pairedConn) {
-                pairedConn.collided = false;
-                pairedConn.collidedProgress = 1;
-                pairedConn.pairedConnId = -1;
-                pairedConn.pushBackTarget = -1;
-                if (pairedConn.reached && pairedConn.progress < 1) {
-                    pairedConn.reached = false;
-                }
-            }
-            conn.collided = false;
-            conn.pairedConnId = -1;
-            conn.pushBackTarget = -1;
-        }
-
-        const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
-        const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
-
-        // 情况1：连接还在建立过程中（未到达）→ 单向缩回到 fromPlanet
+        // 情况1：还在建造中 → 单向缩回到 fromPlanet
         if (!conn.reached) {
             this.retractConnection(conn);
             return;
         }
 
-        // 情况2：连接已建立成功（已到达）→ 从断开位置分为两段，分别缩回
+        // 情况2：已到达 → 从断开位置分为两段，分别向两端缩回
+        const fromPlanet = conn.fromPlanet;
+        const toPlanet = conn.toPlanet;
 
-        // 计算断开位置在连接上的比例（0=fromPlanet端, 1=toPlanet端）
         let cutRatio = 0.5;
         if (cutPos) {
-            const dir = new Vec2(toPlanet.pos.x - fromPlanet.pos.x, toPlanet.pos.y - fromPlanet.pos.y);
-            const lenSq = dir.lengthSqr();
+            const dx = toPlanet.pos.x - fromPlanet.pos.x;
+            const dy = toPlanet.pos.y - fromPlanet.pos.y;
+            const lenSq = dx * dx + dy * dy;
             if (lenSq > 0.001) {
-                const t = ((cutPos.x - fromPlanet.pos.x) * dir.x + (cutPos.y - fromPlanet.pos.y) * dir.y) / lenSq;
+                const t = ((cutPos.x - fromPlanet.pos.x) * dx + (cutPos.y - fromPlanet.pos.y) * dy) / lenSq;
                 cutRatio = Math.max(0.05, Math.min(0.95, t));
             }
         }
 
-        // 先处理反向连接（若存在同阵营反向连接，一并缩回）
+        // 同阵营反向连接一并缩回
         const reverseConn = this.connections.find(
-            c => c.fromPlanetId === conn.toPlanetId
-                && c.toPlanetId === conn.fromPlanetId
-                && c.active
-                && !c.retracting
+            c => c.fromPlanet === conn.toPlanet && c.toPlanet === conn.fromPlanet && c.active && !c.retracting,
         );
-        if (reverseConn) {
-            this.retractConnection(reverseConn);
-        }
+        if (reverseConn) this.retractConnection(reverseConn);
 
-        // 原连接不再继续发送攻击波
         conn.reached = false;
-
-        // 清除该连接已发出但未到达的攻击波
         this.removeAttackWavesForConnection(conn);
 
         // 按断开位置比例分配已支付资源
         const fromRefund = conn.paidCost * cutRatio;
         const toRefund = conn.paidCost - fromRefund;
 
-        // --- 缩回段1：从 fromPlanet 一端向 fromPlanet 缩回 ---
+        // 缩回段1：起点侧（原连接复用）
         conn.retracting = true;
         conn.retractFromEnd = false;
         conn.paidCost = fromRefund;
-        conn.progress = cutRatio; // 从断开位置开始缩回
+        conn.progress = cutRatio;
 
-        // --- 缩回段2：从断开位置向 toPlanet 缩回（创建新连接对象，保持原始星球方向） ---
-        const retractConn = new ConnectionData();
-        retractConn.id = this.nextConnectionId++;
-        retractConn.fromPlanetId = conn.fromPlanetId;
-        retractConn.toPlanetId = conn.toPlanetId;
-        retractConn.faction = conn.faction;
-        retractConn.cost = conn.cost * (1 - cutRatio);
-        retractConn.paidCost = toRefund;
-        retractConn.progress = cutRatio;
-        retractConn.speed = conn.speed;
-        retractConn.reached = false;
-        retractConn.active = true;
-        retractConn.retracting = true;
-        retractConn.retractFromEnd = true; // 从末端方向缩回
-        retractConn.retractProgressFromEnd = cutRatio;
-        retractConn.retractRefundPlanetId = toPlanet.id;
-        retractConn.retractRefundCost = toRefund;
-
-        this.createConnectionNode(retractConn);
-        this.connections.push(retractConn);
+        // 缩回段2：终点侧（新建连接对象，资源返还给 toPlanet）
+        const tail = new ConnectionData();
+        tail.id = this.nextConnectionId++;
+        tail.fromPlanet = conn.fromPlanet;
+        tail.toPlanet = conn.toPlanet;
+        tail.faction = conn.faction;
+        tail.cost = conn.cost * (1 - cutRatio);
+        tail.paidCost = toRefund;
+        tail.progress = cutRatio;
+        tail.speed = conn.speed;
+        tail.reached = false;
+        tail.retracting = true;
+        tail.retractFromEnd = true;
+        tail.retractProgressFromEnd = cutRatio;
+        tail.retractRefundPlanet = toPlanet;
+        tail.retractRefundCost = toRefund;
+        ConnectionView.create(this.connectionLayer!, tail);
+        this.connections.push(tail);
 
         this.setStatus('连接断开，资源缩回返还中...');
     }
 
-    // ==================== 占领星球 =====================
+    // ==================== 占领星球 ====================
     private capturePlanet(planet: PlanetData, newFaction: Faction) {
         planet.faction = newFaction;
         planet.population = Math.max(1, Math.floor(planet.population));
-        planet.overflowPool = 0; // 占领后溢出池清空
-        this.updatePlanetDisplay(planet, this.totalTime);
+        planet.overflowPool = 0;
+        planet.view?.setPopulation(planet.population);
 
         this.setStatus(`${FACTION_NAMES[newFaction]}占领了星球！`);
 
-        // 1. 先处理空中已发出的攻击波：策反并掉头飞回
-        //    (必须先修改攻击波，否则下面 retraction 时会被当做旧连接发射的波给删掉)
+        // 1. 空中已发出的攻击波：策反并掉头飞回（先改波，避免被下面的清波逻辑误删）
         for (const wave of this.attackWaves) {
-            if (!wave.done && wave.fromPlanetId === planet.id) {
-                // 波临阵倒戈并掉头
+            if (!wave.done && wave.fromPlanet === planet) {
                 wave.faction = newFaction;
-
-                // 掉头飞向刚才被攻克的本星球(planet.id)补充兵力
-                const oldTo = wave.toPlanetId;
-                wave.toPlanetId = planet.id;
-                wave.fromPlanetId = oldTo;
-
-                // 取消原本可能具有的对峙点锁定逻辑
+                const oldTo = wave.toPlanet;
+                wave.toPlanet = planet;
+                wave.fromPlanet = oldTo;
                 if (wave.isCollidedWave) {
                     wave.isCollidedWave = false;
                     wave.collidedTarget = null;
                 }
-
-                // 刷新外观颜色
-                if (wave.node) {
-                    const g = wave.node.getComponent(Graphics);
-                    if (g) {
-                        this.drawAttackWave(g, wave.faction);
-                    }
-                }
+                wave.view?.drawBody(newFaction);
             }
         }
 
-        // 2. 再处理这颗星球已经发出去的连接：策反颜色并触发缩回动画
+        // 2. 该星球发出的连接：策反颜色并缩回（资源返还给新阵营）
         for (const conn of this.connections) {
-            // 只要是这颗星球发出去的连接，统统打断并策反其缩回返还
-            if (conn.active && conn.fromPlanetId === planet.id && !conn.retracting) {
-                // 更换连线的阵营，这样缩回的过程中颜色显示的是自己的阵营
+            if (conn.active && conn.fromPlanet === planet && !conn.retracting) {
                 conn.faction = newFaction;
-
-                // 触发缩回。注意由于它是从 fromPlanet 发射出的，缩回逻辑默认就是按退回 fromPlanet 去执行的，
-                // 同时因为前面它的那些“空中波段”已经修改了 toPlanetId 属性，所以这步里的防冗余清波逻辑(removeAttackWavesForConnection)不会删掉那些正在掉头返航的波。
                 this.retractConnection(conn);
             }
         }
@@ -1280,217 +450,157 @@ export class GameManager extends Component {
         if (!this.isGameActive) return;
 
         this.totalTime += dt;
-
-        // 即使游戏结束也绘制背景
-        this.drawBackground(this.totalTime);
+        this.starfield?.render(this.totalTime);
 
         if (this.gameOver) return;
-
-        // 更新滑动切割冷却
-        for (const [id, cooldown] of this.swipeCutCooldowns) {
-            const newCooldown = cooldown - dt;
-            if (newCooldown <= 0) {
-                this.swipeCutCooldowns.delete(id);
-            } else {
-                this.swipeCutCooldowns.set(id, newCooldown);
-            }
-        }
 
         this.updateConnections(dt);
         this.updateAttackWaves(dt);
         this.updateGrowth(dt);
-        this.updateAI(dt);
+        this.ai.update(dt, this.aiDelegate);
         this.redrawConnections();
-        this.updateAttackWaveDisplay();
-        this.updatePlanetAnimations(dt);
+        this.updatePlanetVisuals();
         this.checkGameOver();
     }
 
-    private updatePlanetAnimations(dt: number) {
+    private updatePlanetVisuals() {
         for (const planet of this.planets) {
-            planet.pulseTime += dt;
-            if (planet.graphicsNode) {
-                const g = planet.graphicsNode.getComponent(Graphics);
-                if (g) {
-                    this.drawPlanet(g, planet, this.totalTime);
-                }
-            }
+            planet.view?.render(planet, this.totalTime);
         }
     }
 
+    /** 人口返还/扣除后刷新数字显示 */
+    private refreshPop(planet: PlanetData) {
+        planet.view?.setPopulation(planet.population);
+    }
+
+    // ==================== 连接更新 ====================
     private updateConnections(dt: number) {
         for (let i = this.connections.length - 1; i >= 0; i--) {
             const conn = this.connections[i];
             if (!conn.active) continue;
 
-            // 缩回状态
             if (conn.retracting) {
-                // 双向缩回的末端段：retractProgressFromEnd 递增向1，线段从断开位置向toPlanet缩短
-                if (conn.retractFromEnd) {
-                    const refundPlanet = this.planets.find(p => p.id === conn.retractRefundPlanetId);
-                    const startProgress = conn.progress; // 保存初始断开位置比例
-                    conn.retractProgressFromEnd += conn.speed * 2 * dt;
-                    if (conn.retractProgressFromEnd >= 1) {
-                        conn.retractProgressFromEnd = 1;
-                        // 缩回完成，返还剩余资源并清理
-                        if (refundPlanet && conn.retractRefundCost > 0) {
-                            refundPlanet.population += conn.retractRefundCost;
-                            conn.retractRefundCost = 0;
-                            this.updatePlanetDisplay(refundPlanet, this.totalTime);
-                        }
-                        // 恢复碰撞配对连接
-                        if (conn.collided && conn.pairedConnId >= 0) {
-                            const pairedConn = this.connections.find(c => c.id === conn.pairedConnId && c.active);
-                            if (pairedConn) {
-                                pairedConn.collided = false;
-                                pairedConn.collidedProgress = 1;
-                                pairedConn.pairedConnId = -1;
-                                pairedConn.pushBackTarget = -1;
-                                if (pairedConn.reached && pairedConn.progress < 1) {
-                                    pairedConn.reached = false;
-                                }
-                            }
-                        }
-                        conn.active = false;
-                        if (conn.node) conn.node.destroy();
-                        this.connections.splice(i, 1);
-                        continue;
-                    }
-                    // 按缩回进度比例动态返还资源：已缩回的比例 = (current - start) / (1 - start)
-                    if (refundPlanet && startProgress < 1) {
-                        const retractedRatio = (conn.retractProgressFromEnd - startProgress) / (1 - startProgress);
-                        const targetRetain = conn.retractRefundCost * (1 - retractedRatio);
-                        const refundAmount = conn.retractRefundCost - targetRetain;
-                        if (refundAmount > 0.01) {
-                            refundPlanet.population += refundAmount;
-                            conn.retractRefundCost -= refundAmount;
-                            this.updatePlanetDisplay(refundPlanet, this.totalTime);
-                        }
-                    }
-                    continue;
-                }
-
-                // 单向缩回 / 双向缩回的起始段：progress 递减，资源按比例返还给 fromPlanet
-                const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
-                conn.progress -= conn.speed * 2 * dt;
-                if (conn.progress <= 0) {
-                    conn.progress = 0;
-                    // 缩回完成，返还剩余已支付资源并清理
-                    if (fromPlanet && conn.paidCost > 0) {
-                        fromPlanet.population += conn.paidCost;
-                        conn.paidCost = 0;
-                        this.updatePlanetDisplay(fromPlanet, this.totalTime);
-                    }
-                    // 恢复碰撞配对连接
-                    if (conn.collided && conn.pairedConnId >= 0) {
-                        const pairedConn = this.connections.find(c => c.id === conn.pairedConnId && c.active);
-                        if (pairedConn) {
-                            pairedConn.collided = false;
-                            pairedConn.collidedProgress = 1;
-                            pairedConn.pairedConnId = -1;
-                            pairedConn.pushBackTarget = -1;
-                            if (pairedConn.reached && pairedConn.progress < 1) {
-                                pairedConn.reached = false;
-                            }
-                        }
-                    }
+                if (this.updateRetracting(conn, dt)) {
+                    // 缩回完成：恢复配对、销毁视图、移除
+                    this.releaseCollisionPair(conn);
                     conn.active = false;
-                    if (conn.node) conn.node.destroy();
+                    conn.view?.destroy();
                     this.connections.splice(i, 1);
-                    continue;
-                }
-                // 按当前进度计算应保留的已支付量，差额返还
-                if (fromPlanet) {
-                    const targetPaid = conn.cost * conn.progress;
-                    const refundAmount = conn.paidCost - targetPaid;
-                    if (refundAmount > 0) {
-                        const actualRefund = Math.min(refundAmount, conn.paidCost);
-                        fromPlanet.population += actualRefund;
-                        conn.paidCost -= actualRefund;
-                        this.updatePlanetDisplay(fromPlanet, this.totalTime);
-                    }
                 }
                 continue;
             }
 
             if (conn.reached) continue;
 
-            // 被顶回的连接：progress 逐步减小到 pushBackTarget
+            // 被顶回的连接：progress 渐变到 pushBackTarget
             if (conn.pushBackTarget >= 0 && conn.progress > conn.pushBackTarget) {
-                const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
                 conn.progress -= conn.speed * dt;
                 if (conn.progress <= conn.pushBackTarget) {
                     conn.progress = conn.pushBackTarget;
-                    conn.pushBackTarget = -1; // 顶回完成
+                    conn.pushBackTarget = -1;
                 }
-                // 按缩回进度动态返还资源
-                if (fromPlanet) {
-                    const targetPaid = conn.cost * conn.progress;
-                    const refundAmount = conn.paidCost - targetPaid;
-                    if (refundAmount > 0) {
-                        fromPlanet.population += refundAmount;
-                        conn.paidCost -= refundAmount;
-                        this.updatePlanetDisplay(fromPlanet, this.totalTime);
-                    }
-                }
-                // 顶回完成后检查是否到达对峙点
+                this.refundToProgress(conn, conn.fromPlanet);
                 if (conn.pushBackTarget < 0 && conn.collided && conn.progress >= conn.collidedProgress - 0.01) {
                     conn.reached = true;
                 }
                 continue;
             }
+            if (conn.pushBackTarget >= 0) conn.pushBackTarget = -1;
 
-            // 被顶回但 progress 已 <= target 的情况，清除标记
-            if (conn.pushBackTarget >= 0) {
-                conn.pushBackTarget = -1;
-            }
-
-            // 碰撞对峙的连接：进度上限为 collidedProgress
+            // 建造推进（对峙连接上限为 collidedProgress）
             const maxProgress = conn.collided ? conn.collidedProgress : 1;
-
             conn.progress += conn.speed * dt;
             if (conn.progress >= maxProgress) {
                 conn.progress = maxProgress;
                 conn.reached = true;
             }
 
-            // 按距离比例动态扣除资源
-            const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
-            if (fromPlanet) {
-                // 碰撞对峙的连接：成本只需支付到碰撞点
-                const effectiveCost = conn.collided ? conn.cost * conn.collidedProgress : conn.cost;
-                const targetPaid = effectiveCost * conn.progress / (conn.collided ? conn.collidedProgress : 1);
-                const deltaCost = targetPaid - conn.paidCost;
-                if (deltaCost > 0) {
-                    const actualDeduct = Math.min(deltaCost, fromPlanet.population - 1);
-                    if (actualDeduct > 0) {
-                        fromPlanet.population -= actualDeduct;
-                        conn.paidCost += actualDeduct;
-                        this.updatePlanetDisplay(fromPlanet, this.totalTime);
-                    } else {
-                        // 资源耗尽，进入缩回状态
-                        conn.retracting = true;
-                        this.setStatus('资源耗尽，连接缩回中...');
-                    }
+            // 按进度动态扣除资源
+            const fromPlanet = conn.fromPlanet;
+            const effectiveCost = conn.collided ? conn.cost * conn.collidedProgress : conn.cost;
+            const targetPaid = effectiveCost * (conn.progress / maxProgress);
+            const deltaCost = targetPaid - conn.paidCost;
+            if (deltaCost > 0) {
+                const actualDeduct = Math.min(deltaCost, fromPlanet.population - 1);
+                if (actualDeduct > 0) {
+                    fromPlanet.population -= actualDeduct;
+                    conn.paidCost += actualDeduct;
+                    this.refreshPop(fromPlanet);
+                } else {
+                    conn.retracting = true;
+                    this.setStatus('资源耗尽，连接缩回中...');
                 }
             }
         }
     }
 
-    private redrawConnections() {
-        for (const conn of this.connections) {
-            if (!conn.active || !conn.node) continue;
-            const g = conn.node.getComponent(Graphics);
-            if (!g) continue;
-            const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
-            const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
-            this.drawConnection(g, conn, fromPlanet, toPlanet);
+    /** 缩回推进；返回 true 表示缩回完成 */
+    private updateRetracting(conn: ConnectionData, dt: number): boolean {
+        if (conn.retractFromEnd) {
+            // 双向缩回末端段：从断开位置向 toPlanet 缩短，资源返还给 toPlanet
+            const startProgress = conn.progress;
+            conn.retractProgressFromEnd += conn.speed * TUNING.RETRACT_SPEED_MULT * dt;
+            if (conn.retractProgressFromEnd >= 1) {
+                conn.retractProgressFromEnd = 1;
+                const refundPlanet = conn.retractRefundPlanet;
+                if (refundPlanet && conn.retractRefundCost > 0) {
+                    refundPlanet.population += conn.retractRefundCost;
+                    conn.retractRefundCost = 0;
+                    this.refreshPop(refundPlanet);
+                }
+                return true;
+            }
+            const refundPlanet = conn.retractRefundPlanet;
+            if (refundPlanet && startProgress < 1) {
+                const retractedRatio = (conn.retractProgressFromEnd - startProgress) / (1 - startProgress);
+                const refundAmount = conn.retractRefundCost * retractedRatio;
+                if (refundAmount > 0.01) {
+                    refundPlanet.population += refundAmount;
+                    conn.retractRefundCost -= refundAmount;
+                    this.refreshPop(refundPlanet);
+                }
+            }
+            return false;
+        }
+
+        // 单向缩回：progress 递减，资源返还给 fromPlanet
+        conn.progress -= conn.speed * TUNING.RETRACT_SPEED_MULT * dt;
+        if (conn.progress <= 0) {
+            conn.progress = 0;
+            if (conn.paidCost > 0) {
+                conn.fromPlanet.population += conn.paidCost;
+                conn.paidCost = 0;
+                this.refreshPop(conn.fromPlanet);
+            }
+            return true;
+        }
+        this.refundToProgress(conn, conn.fromPlanet);
+        return false;
+    }
+
+    /** 按当前 progress 计算应保留的已支付量，差额返还给 fromPlanet */
+    private refundToProgress(conn: ConnectionData, fromPlanet: PlanetData) {
+        const targetPaid = conn.cost * conn.progress;
+        const refundAmount = Math.min(conn.paidCost - targetPaid, conn.paidCost);
+        if (refundAmount > 0) {
+            fromPlanet.population += refundAmount;
+            conn.paidCost -= refundAmount;
+            this.refreshPop(fromPlanet);
         }
     }
 
+    private redrawConnections() {
+        for (const conn of this.connections) {
+            if (!conn.active || !conn.view) continue;
+            conn.view.render(conn, this.totalTime, conn.id === this.cutHighlightId);
+        }
+    }
+
+    // ==================== 攻击波更新 ====================
     private updateAttackWaves(dt: number) {
         this.attackTimer += dt;
-        if (this.attackTimer >= this.ATTACK_INTERVAL) {
+        if (this.attackTimer >= this.attackInterval) {
             this.attackTimer = 0;
             this.sendAttackWaves();
         }
@@ -1498,494 +608,199 @@ export class GameManager extends Component {
         for (const wave of this.attackWaves) {
             if (wave.done) continue;
 
+            let tx: number, ty: number, arriveDist: number;
             if (wave.isCollidedWave && wave.collidedTarget) {
-                // 碰撞对峙攻击波：向对峙点移动
-                const dir = new Vec2(wave.collidedTarget.x - wave.pos.x, wave.collidedTarget.y - wave.pos.y);
-                const dist = dir.length();
-
-                if (dist < 10) {
-                    // 到达对峙点，检查是否有敌对攻击波在此相遇
-                    const enemyWave = this.attackWaves.find(
-                        w => !w.done && w.isCollidedWave
-                            && w.collidedConnId !== wave.collidedConnId
-                            && w.faction !== wave.faction
-                            && w.collidedTarget
-                            && Vec2.distance(w.pos, wave.collidedTarget) < 20
-                    );
-                    if (enemyWave) {
-                        // 双方攻击波在对峙点相遇，互相抵消（兵力差值继续前进）
-                        if (wave.amount > enemyWave.amount) {
-                            wave.amount -= enemyWave.amount;
-                            enemyWave.done = true;
-                            // 剩余兵力继续向敌方星球前进
-                            wave.isCollidedWave = false;
-                            const toPlanet = this.planets.find(p => p.id === wave.toPlanetId)!;
-                            wave.collidedTarget = null;
-                        } else if (enemyWave.amount > wave.amount) {
-                            enemyWave.amount -= wave.amount;
-                            wave.done = true;
-                            enemyWave.isCollidedWave = false;
-                            const toPlanet = this.planets.find(p => p.id === enemyWave.toPlanetId)!;
-                            enemyWave.collidedTarget = null;
-                        } else {
-                            // 双方兵力相等，互相抵消
-                            wave.done = true;
-                            enemyWave.done = true;
-                        }
-                    } else {
-                        // 没有敌方攻击波，到达对峙点后继续向敌方星球前进
-                        wave.isCollidedWave = false;
-                        wave.collidedTarget = null;
-                    }
-                } else {
-                    const norm = dir.normalize();
-                    wave.pos.x += norm.x * wave.speed * dt;
-                    wave.pos.y += norm.y * wave.speed * dt;
-                }
+                tx = wave.collidedTarget.x;
+                ty = wave.collidedTarget.y;
+                arriveDist = 10;
             } else {
-                // 普通攻击波逻辑
-                const toPlanet = this.planets.find(p => p.id === wave.toPlanetId)!;
-                const dir = new Vec2(toPlanet.pos.x - wave.pos.x, toPlanet.pos.y - wave.pos.y);
-                const dist = dir.length();
+                tx = wave.toPlanet.pos.x;
+                ty = wave.toPlanet.pos.y;
+                arriveDist = wave.toPlanet.radius + 5;
+            }
 
-                if (dist < toPlanet.radius + 5) {
-                    this.applyAttack(wave);
-                    wave.done = true;
-                } else {
-                    const norm = dir.normalize();
-                    wave.pos.x += norm.x * wave.speed * dt;
-                    wave.pos.y += norm.y * wave.speed * dt;
+            const dx = tx - wave.pos.x;
+            const dy = ty - wave.pos.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < arriveDist) {
+                this.applyAttack(wave);
+                wave.done = true;
+            } else {
+                const step = wave.speed * dt / dist;
+                wave.pos.x += dx * step;
+                wave.pos.y += dy * step;
+                if (wave.view) {
+                    wave.view.syncPosition(wave.pos);
+                    wave.view.setAmount(wave.amount);
                 }
             }
         }
 
         for (let i = this.attackWaves.length - 1; i >= 0; i--) {
             if (this.attackWaves[i].done) {
-                if (this.attackWaves[i].node) {
-                    this.attackWaves[i].node!.destroy();
-                }
+                this.attackWaves[i].view?.destroy();
                 this.attackWaves.splice(i, 1);
             }
         }
     }
 
     private sendAttackWaves() {
+        // 先统计每个星球的出度，用于均分人口溢出池
+        const outCounts = new Map<number, number>();
+        for (const conn of this.connections) {
+            if (conn.active && conn.reached && conn.fromPlanet.faction === conn.faction) {
+                outCounts.set(conn.fromPlanet.id, (outCounts.get(conn.fromPlanet.id) ?? 0) + 1);
+            }
+        }
+
         for (const conn of this.connections) {
             if (!conn.active || !conn.reached) continue;
-            const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
-
-            // 发送方只允许从对应自身阵营的星球发出
+            const fromPlanet = conn.fromPlanet;
             if (fromPlanet.faction !== conn.faction) continue;
 
-            // 计算正常由自身人口决定的发送额度
             let sendAmount = 0;
             if (fromPlanet.population >= 3) {
-                sendAmount = Math.max(1, Math.floor(fromPlanet.population * this.SEND_RATIO));
+                sendAmount = Math.max(1, Math.floor(fromPlanet.population * this.sendRatio));
             }
+            const overflowShare = fromPlanet.overflowPool / (outCounts.get(fromPlanet.id) ?? 1);
+            const totalSend = sendAmount + overflowShare;
+            if (totalSend <= 0) continue;
 
-            // 获取该星球向外发送的所有合法活跃连接，用来均分累积的人口溢出量
-            const allOutConns = this.connections.filter(
-                c => c.active && c.reached && c.fromPlanetId === fromPlanet.id && c.faction === fromPlanet.faction
-            );
-
-            let overflowShare = 0;
-            if (allOutConns.length > 0) {
-                overflowShare = fromPlanet.overflowPool / allOutConns.length;
-            }
-
-            const totalSendAmount = sendAmount + overflowShare;
-
-            if (totalSendAmount <= 0) continue;
-
-            // 根据混合额度，在此连接创建并发送单独的攻击波
-            this.createAndSendWave(conn, totalSendAmount);
+            this.createAndSendWave(conn, totalSend);
         }
 
-        // 发送完本轮全波次后，清空每个星球在此期间累积的人口溢出池
-        for (const p of this.planets) {
-            p.overflowPool = 0;
-        }
+        for (const p of this.planets) p.overflowPool = 0;
     }
 
     private createAndSendWave(conn: ConnectionData, amount: number) {
-        const fromPlanet = this.planets.find(p => p.id === conn.fromPlanetId)!;
-        const toPlanet = this.planets.find(p => p.id === conn.toPlanetId)!;
+        const fromPlanet = conn.fromPlanet;
+        const toPlanet = conn.toPlanet;
 
         const wave = new AttackWave();
-        wave.fromPlanetId = conn.fromPlanetId;
-        wave.toPlanetId = conn.toPlanetId;
+        wave.fromPlanet = fromPlanet;
+        wave.toPlanet = toPlanet;
         wave.faction = conn.faction;
         wave.amount = amount;
+        wave.pos.set(fromPlanet.pos.x, fromPlanet.pos.y);
 
         if (conn.collided) {
-            // 碰撞对峙：攻击波从fromPlanet出发，目标是对峙点（中间位置）
-            const dir = new Vec2(toPlanet.pos.x - fromPlanet.pos.x, toPlanet.pos.y - fromPlanet.pos.y);
-            const totalDist = dir.length();
-            const normDir = dir.normalize();
-            const collMidX = fromPlanet.pos.x + normDir.x * totalDist * conn.collidedProgress;
-            const collMidY = fromPlanet.pos.y + normDir.y * totalDist * conn.collidedProgress;
-            wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
-            wave.speed = 180;
-            wave.collidedTarget = new Vec2(collMidX, collMidY);
+            // 对峙连接：攻击波飞向对峙点
+            const dx = toPlanet.pos.x - fromPlanet.pos.x;
+            const dy = toPlanet.pos.y - fromPlanet.pos.y;
+            wave.collidedTarget = new Vec2(
+                fromPlanet.pos.x + dx * conn.collidedProgress,
+                fromPlanet.pos.y + dy * conn.collidedProgress,
+            );
             wave.isCollidedWave = true;
             wave.collidedConnId = conn.id;
-        } else {
-            wave.pos = new Vec2(fromPlanet.pos.x, fromPlanet.pos.y);
-            wave.speed = 180;
         }
 
-        this.createAttackWaveNode(wave);
+        AttackWaveView.create(this.attackLayer!, wave);
         this.attackWaves.push(wave);
     }
 
     private applyAttack(wave: AttackWave) {
-        const targetPlanet = this.planets.find(p => p.id === wave.toPlanetId)!;
+        const target = wave.toPlanet;
 
-        if (targetPlanet.faction === wave.faction) {
-            targetPlanet.population += wave.amount;
-            if (targetPlanet.population > targetPlanet.maxPopulation) {
-                // 如果同阵营支援使得人口超过上限，则存入溢出池后续发射发走
-                targetPlanet.overflowPool += (targetPlanet.population - targetPlanet.maxPopulation);
-                targetPlanet.population = targetPlanet.maxPopulation;
+        if (target.faction === wave.faction) {
+            target.population += wave.amount;
+            if (target.population > target.maxPopulation) {
+                target.overflowPool += target.population - target.maxPopulation;
+                target.population = target.maxPopulation;
             }
         } else {
-            targetPlanet.population -= wave.amount * this.ATTACK_DAMAGE_RATIO;
-            if (targetPlanet.population <= 0) {
-                targetPlanet.population = 0;
-                this.capturePlanet(targetPlanet, wave.faction);
+            target.population -= wave.amount * TUNING.ATTACK_DAMAGE_RATIO;
+            if (target.population <= 0) {
+                target.population = 0;
+                this.capturePlanet(target, wave.faction);
             }
         }
-        this.updatePlanetDisplay(targetPlanet, this.totalTime);
+        this.refreshPop(target);
     }
 
-    private drawAttackWave(g: Graphics, faction: Faction) {
-        g.clear();
-        const color = FACTION_COLORS[faction];
-
-        g.fillColor = new Color(color.r, color.g, color.b, 60);
-        g.circle(0, 0, 8);
-        g.fill();
-
-        g.fillColor = color;
-        g.circle(0, 0, 5);
-        g.fill();
-
-        g.fillColor = new Color(255, 255, 255, 180);
-        g.circle(-1, 1, 2);
-        g.fill();
-    }
-
-    private createAttackWaveNode(wave: AttackWave) {
-        const node = new Node('AttackWave');
-        node.addComponent(UITransform).setContentSize(new Size(20, 20));
-        const g = node.addComponent(Graphics);
-
-        this.drawAttackWave(g, wave.faction);
-
-        const lNode = new Node('AmountLabel');
-        lNode.addComponent(UITransform).setContentSize(new Size(40, 18));
-        const label = lNode.addComponent(Label);
-        label.string = Math.floor(wave.amount).toString();
-        label.fontSize = 11;
-        label.color = new Color(255, 255, 255, 200);
-        label.horizontalAlign = Label.HorizontalAlign.CENTER;
-        lNode.setPosition(0, 12, 0);
-        node.addChild(lNode);
-
-        node.setPosition(wave.pos.x, wave.pos.y, 0);
-        this.attackLayer!.addChild(node);
-        wave.node = node;
-    }
-
-    private updateAttackWaveDisplay() {
-        for (const wave of this.attackWaves) {
-            if (wave.done || !wave.node) continue;
-            wave.node.setPosition(wave.pos.x, wave.pos.y, 0);
-
-            // 保持抵消后的数字实时显示正确
-            const labelNode = wave.node.getChildByName('AmountLabel');
-            if (labelNode) {
-                const label = labelNode.getComponent(Label);
-                if (label) label.string = Math.floor(wave.amount).toString();
-            }
-        }
-    }
-
+    // ==================== 人口增长 ====================
     private updateGrowth(dt: number) {
         this.growTimer += dt;
-        if (this.growTimer < this.GROW_INTERVAL) return;
+        if (this.growTimer < TUNING.GROW_INTERVAL) return;
         this.growTimer = 0;
 
         for (const planet of this.planets) {
-            // 中立星球不再自动增长人口
             if (planet.faction === Faction.NEUTRAL) continue;
-
             planet.population += planet.growRate;
             if (planet.population > planet.maxPopulation) {
-                // 如果人口超标，溢出的人口被积攒进入池子，由发射波带走释放
-                planet.overflowPool += (planet.population - planet.maxPopulation);
+                planet.overflowPool += planet.population - planet.maxPopulation;
                 planet.population = planet.maxPopulation;
             }
-
-            // 刷新当前星球由于生长带来的人口数值更新到UI层面
-            this.updatePlanetDisplay(planet, this.totalTime);
+            this.refreshPop(planet);
         }
     }
 
-    private updateAI(dt: number) {
-        this.aiTimer += dt;
-        if (this.aiTimer < this.AI_INTERVAL) return;
-        this.aiTimer = 0;
-
-        const enemyPlanets = this.planets.filter(p => p.faction === Faction.ENEMY);
-        if (enemyPlanets.length === 0) return;
-
-        for (const ep of enemyPlanets) {
-            if (Math.random() > 0.6) continue;
-
-            let bestTarget: PlanetData | null = null;
-            let bestScore = -Infinity;
-
-            for (const tp of this.planets) {
-                if (tp.id === ep.id) continue;
-                if (tp.faction === Faction.ENEMY) continue; // AI不连接同阵营星球
-                const dist = Vec2.distance(ep.pos, tp.pos);
-
-                const exists = this.connections.find(
-                    c => c.fromPlanetId === ep.id && c.toPlanetId === tp.id && c.active
-                );
-                if (exists) continue;
-
-                const cost = dist * this.CONNECTION_COST_PER_UNIT;
-                if (ep.population <= cost + 5) continue;
-
-                let score = 0;
-                if (tp.faction === Faction.PLAYER) score += 35;
-                else if (tp.faction === Faction.NEUTRAL) score += 25;
-
-                score -= tp.population * 0.4;
-                score -= dist * 0.03;
-
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestTarget = tp;
-                }
-            }
-
-            if (bestTarget) {
-                this.tryCreateConnection(ep, bestTarget, true);
-            }
-        }
-
-        // AI清理自己的过期连接：源星球不再属于AI，或目标星球已是AI阵营
-        const staleConns = this.connections.filter(
-            c => c.faction === Faction.ENEMY && c.active && !c.retracting
-        );
-        for (const sc of staleConns) {
-            const fromPlanet = this.planets.find(p => p.id === sc.fromPlanetId);
-            const toPlanet = this.planets.find(p => p.id === sc.toPlanetId);
-            if (!fromPlanet || !toPlanet) continue;
-            if (fromPlanet.faction !== Faction.ENEMY || toPlanet.faction === Faction.ENEMY) {
-                if (Math.random() > 0.3) continue; // 每次只以70%概率清理，避免瞬间全部断开
-                this.breakConnection(sc);
-            }
-        }
-    }
-
-    // ==================== 检查游戏结束 ====================
+    // ==================== 游戏结束 ====================
     private checkGameOver() {
-        const playerPlanets = this.planets.filter(p => p.faction === Faction.PLAYER);
-        const enemyPlanets = this.planets.filter(p => p.faction === Faction.ENEMY);
+        if (this.gameOver) return;
 
-        if (playerPlanets.length === 0 && !this.gameOver) {
+        let hasPlayer = false;
+        let hasEnemy = false;
+        for (const p of this.planets) {
+            if (p.faction === Faction.PLAYER) hasPlayer = true;
+            else if (p.faction === Faction.ENEMY) hasEnemy = true;
+        }
+
+        if (!hasPlayer || !hasEnemy) {
             this.gameOver = true;
-            this.gameResult = GameResult.LOSE;
-            this.showResult(GameResult.LOSE);
-        } else if (enemyPlanets.length === 0 && !this.gameOver) {
-            this.gameOver = true;
-            this.gameResult = GameResult.WIN;
-            this.showResult(GameResult.WIN);
+            if (this.touch) this.touch.enabled = false;
+            this.showResult(hasPlayer ? GameResult.WIN : GameResult.LOSE);
         }
     }
 
-    private restartEnabled = false;
+    private showResult(result: GameResult) {
+        if (!this.resultPanel) return;
 
-    // ==================== 下一关 ====================
+        let desc: string;
+        let hasNext = false;
+        if (result === GameResult.WIN) {
+            const elapsed = Math.floor(this.totalTime - this.gameStartTime);
+            desc = `耗时 ${elapsed} 秒占领了所有敌方星球！`;
+            if (this.currentLevelData) {
+                GameState.unlockedLevel = this.currentLevelData.id + 1;
+                GameState.setHighScore(this.currentLevelData.id, elapsed);
+                hasNext = !!getLevelData(this.currentLevelData.id + 1);
+            }
+        } else {
+            desc = '你的所有星球已被占领...';
+        }
+        this.resultPanel.show(result, desc, hasNext);
+    }
+
+    // ==================== 关卡流转 ====================
     private goNextLevel() {
         if (!this.currentLevelData) return;
         const nextId = this.currentLevelData.id + 1;
-        const nextLevel = GameState.getLevelData(nextId);
-        if (nextLevel) {
-            this.loadLevel(nextId);
-        }
+        if (getLevelData(nextId)) this.loadLevel(nextId);
     }
 
-    // ==================== 重新挑战当前关 ====================
     private restartCurrentLevel() {
-        if (!this.currentLevelData) return;
-        this.loadLevel(this.currentLevelData.id);
+        if (this.currentLevelData) this.loadLevel(this.currentLevelData.id);
     }
 
-    // ==================== 返回菜单 ====================
-    private backToMenu() {
-        // 通知显示菜单
-        director.emit('show_menu');
-    }
-
-    // ==================== 判断触摸点是否在节点内 ====================
-    private isInsideNode(pos: Vec2, node: Node | null): boolean {
-        if (!node || !node.isValid) return false;
-        const uiTransform = node.getComponent(UITransform);
-        if (!uiTransform) return false;
-
-        const worldPos = node.getWorldPosition();
-        const canvasPos = this.canvas!.getWorldPosition();
-        const nodeX = worldPos.x - canvasPos.x;
-        const nodeY = worldPos.y - canvasPos.y;
-
-        const size = uiTransform.contentSize;
-        const halfW = size.width / 2;
-        const halfH = size.height / 2;
-
-        return pos.x >= nodeX - halfW && pos.x <= nodeX + halfW
-            && pos.y >= nodeY - halfH && pos.y <= nodeY + halfH;
-    }
-
+    // ==================== 工具 ====================
     private setStatus(text: string) {
-        if (this.statusLabel) {
-            this.statusLabel.string = text;
-        }
+        if (this.statusLabel) this.statusLabel.string = text;
     }
 
-    private pointToSegmentDistance(point: Vec2, segA: Vec2, segB: Vec2): number {
-        const dx = segB.x - segA.x;
-        const dy = segB.y - segA.y;
-        const lenSq = dx * dx + dy * dy;
-
-        if (lenSq < 0.001) {
-            return Vec2.distance(point, segA);
-        }
-
-        let t = ((point.x - segA.x) * dx + (point.y - segA.y) * dy) / lenSq;
-        t = Math.max(0, Math.min(1, t));
-
-        const projX = segA.x + t * dx;
-        const projY = segA.y + t * dy;
-
-        const pdx = point.x - projX;
-        const pdy = point.y - projY;
-        return Math.sqrt(pdx * pdx + pdy * pdy);
-    }
-
-    private segmentToSegmentDistance(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2): number {
-        let minDist = Infinity;
-        const steps = 5;
-        for (let i = 0; i <= steps; i++) {
-            const t = i / steps;
-            const px = a1.x + (a2.x - a1.x) * t;
-            const py = a1.y + (a2.y - a1.y) * t;
-            const d = this.pointToSegmentDistance(new Vec2(px, py), b1, b2);
-            if (d < minDist) minDist = d;
-        }
-        for (let i = 0; i <= steps; i++) {
-            const t = i / steps;
-            const px = b1.x + (b2.x - b1.x) * t;
-            const py = b1.y + (b2.y - b1.y) * t;
-            const d = this.pointToSegmentDistance(new Vec2(px, py), a1, a2);
-            if (d < minDist) minDist = d;
-        }
-        return minDist;
-    }
-
-    private closestPointOnSegment(point: Vec2, segA: Vec2, segB: Vec2): Vec2 {
-        const dx = segB.x - segA.x;
-        const dy = segB.y - segA.y;
-        const lenSq = dx * dx + dy * dy;
-
-        if (lenSq < 0.001) {
-            return segA.clone();
-        }
-
-        let t = ((point.x - segA.x) * dx + (point.y - segA.y) * dy) / lenSq;
-        t = Math.max(0, Math.min(1, t));
-
-        return new Vec2(segA.x + t * dx, segA.y + t * dy);
-    }
-
-    private drawCutMark(g: Graphics, x: number, y: number) {
-        const s = 8;
-        g.strokeColor = new Color(255, 255, 100, 240);
-        g.lineWidth = 2.5;
-
-        g.moveTo(x - s, y - s);
-        g.lineTo(x + s, y + s);
-        g.moveTo(x + s, y - s);
-        g.lineTo(x - s, y + s);
-        g.stroke();
-
-        g.strokeColor = new Color(255, 200, 50, 160);
-        g.lineWidth = 1.5;
-        g.circle(x, y, s + 2);
-        g.stroke();
-    }
-
-    // ==================== 设置游戏层可见性 ====================
     private setGameLayerVisible(visible: boolean) {
         if (this.bgNode) this.bgNode.active = visible;
         if (this.connectionLayer) this.connectionLayer.active = visible;
         if (this.gameLayer) this.gameLayer.active = visible;
         if (this.attackLayer) this.attackLayer.active = visible;
         if (this.uiLayer) this.uiLayer.active = visible;
-        if (this.resultLayer) this.resultLayer.active = visible && this.gameOver;
-    }
-
-    private screenToLocal(uiPos: Vec2): Vec2 {
-        return new Vec2(uiPos.x - this.canvasWidth / 2, uiPos.y - this.canvasHeight / 2);
+        if (this.resultPanel) this.resultPanel.node.active = visible && this.gameOver;
     }
 
     protected onDestroy() {
-        this.node.off(Input.EventType.TOUCH_START, this.onTouchStart, this);
-        this.node.off(Input.EventType.TOUCH_MOVE, this.onTouchMove, this);
-        this.node.off(Input.EventType.TOUCH_END, this.onTouchEnd, this);
-        this.node.off(Input.EventType.TOUCH_CANCEL, this.onTouchCancel, this);
-        director.off('start_level', this.onDirectorStartLevel, this);
-        director.off('menu_show', this.onDirectorMenuShow, this);
+        this.touch?.detach();
+        director.off('start_level', this.onStartLevel, this);
+        director.off('show_menu', this.onShowMenu, this);
     }
 }
-
-// ==================== 自动安装 ====================
-let _autoInstalled = false;
-
-function autoInstall() {
-    if (_autoInstalled) return;
-
-    const scene = director.getScene();
-    if (!scene || !scene.isValid) return;
-
-    function findCanvas(node: Node): Node | null {
-        if (node.getComponent(Canvas)) return node;
-        for (let i = 0; i < node.children.length; i++) {
-            const found = findCanvas(node.children[i]);
-            if (found) return found;
-        }
-        return null;
-    }
-
-    const canvas = findCanvas(scene);
-    if (!canvas) return;
-
-    // 如果已有任何管理组件，不再重复安装
-    if (canvas.getComponent(GameManager) || canvas.getComponent(MenuScene)) {
-        _autoInstalled = true;
-        return;
-    }
-
-    canvas.addComponent(GameManager);
-    _autoInstalled = true;
-}
-
-// 注意：GameScene.ts 的自动安装会同时添加 MenuScene 和 GameManager
-// 此处保留兼容，如果只有 GameManager 也能独立运行
-director.on(director.EVENT_AFTER_SCENE_LAUNCH, () => {
-    autoInstall();
-});
