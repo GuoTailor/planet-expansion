@@ -1,4 +1,4 @@
-import { Color, Component, Graphics, Node } from 'cc';
+import { Color, Component, Graphics, Label, Node } from 'cc';
 import { DESIGN_HEIGHT, DESIGN_WIDTH, GameResult } from '../core/GameConstants';
 import { createButton, createLabel, createUINode, makeClickable } from '../core/UIHelper';
 
@@ -14,6 +14,8 @@ export class ResultPanel {
     private readonly titleLabel;
     private readonly descLabel;
     private readonly nextBtn: Node;
+    private readonly restartBtn: Node;
+    private readonly restartLabel;
 
     constructor(parent: Node, owner: Component, callbacks: ResultCallbacks) {
         this.node = createUINode('ResultLayer', DESIGN_WIDTH, DESIGN_HEIGHT, parent);
@@ -49,10 +51,11 @@ export class ResultPanel {
         this.node.addChild(this.nextBtn);
         makeClickable(this.nextBtn, owner, callbacks.onNext);
 
-        const restartBtn = createButton('重新挑战', 200, 45, 20);
-        restartBtn.setPosition(-115, -85, 0);
-        this.node.addChild(restartBtn);
-        makeClickable(restartBtn, owner, callbacks.onRestart);
+        this.restartBtn = createButton('重新挑战', 200, 45, 20);
+        this.restartBtn.setPosition(-115, -85, 0);
+        this.node.addChild(this.restartBtn);
+        makeClickable(this.restartBtn, owner, callbacks.onRestart);
+        this.restartLabel = this.restartBtn.getComponentInChildren(Label);
 
         const menuBtn = createButton('返回菜单', 200, 45, 20);
         menuBtn.setPosition(115, -85, 0);
@@ -71,6 +74,44 @@ export class ResultPanel {
         }
         this.descLabel.string = descText;
         this.nextBtn.active = result === GameResult.WIN && hasNext;
+        this.restartBtn.active = true;
+        if (this.restartLabel) this.restartLabel.string = '重新挑战';
+    }
+
+    /**
+     * 在线对局结算。
+     * @param placement FFA 名次（1=冠军）；duel 恒为 1(胜) 或 2(负)
+     * @param rated false=人机/含 AI 局，不计积分
+     * @param customDesc 自定义描述（如断线提示），为空则自动组装
+     */
+    showOnline(won: boolean, placement: number, ratingChange: number, rated: boolean,
+               durationSec: number, mode: string, customDesc?: string) {
+        this.node.active = true;
+        if (won) {
+            this.titleLabel.string = mode === 'ffa' ? '冠军！' : '胜利！';
+            this.titleLabel.color = new Color(80, 255, 120, 255);
+        } else {
+            this.titleLabel.string = mode === 'ffa' && placement > 0 ? `第 ${placement} 名` : '失败';
+            this.titleLabel.color = new Color(255, 80, 80, 255);
+        }
+
+        let desc: string;
+        if (customDesc) {
+            desc = customDesc;
+        } else {
+            desc = durationSec > 0 ? `对局时长 ${durationSec} 秒` : '';
+            if (rated) {
+                desc += ratingChange >= 0 ? `\n积分 +${ratingChange}` : `\n积分 ${ratingChange}`;
+            } else {
+                desc += '\n人机对战，不计积分';
+            }
+        }
+        this.descLabel.string = desc;
+
+        // 在线结算无"下一关"，"重新挑战"变为"再来一局"（重新匹配）
+        this.nextBtn.active = false;
+        this.restartBtn.active = true;
+        if (this.restartLabel) this.restartLabel.string = '再来一局';
     }
 
     hide() {

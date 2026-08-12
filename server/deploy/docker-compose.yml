@@ -1,0 +1,43 @@
+# 单机一键部署：gameserver + MySQL 两个服务
+# 用法：cd server/deploy && docker compose up -d --build
+# 微信密钥等敏感配置通过 .env 文件或环境变量注入（不要提交真实 secret）
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: conquest-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: conquest
+      MYSQL_USER: conquest
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-conquest123}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 首次启动自动执行建表
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  gameserver:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: conquest-server
+    environment:
+      CONQUEST_LISTEN: ":8080"
+      CONQUEST_MYSQL_DSN: "conquest:${MYSQL_PASSWORD:-conquest123}@tcp(mysql:3306)/conquest?parseTime=true&charset=utf8mb4&timeout=5s"
+      WECHAT_APP_ID: ${WECHAT_APP_ID:-}
+      WECHAT_SECRET: ${WECHAT_SECRET:-}
+      ALLOW_TEST_LOGIN: ${ALLOW_TEST_LOGIN:-true}
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql-data:

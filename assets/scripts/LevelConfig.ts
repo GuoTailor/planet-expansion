@@ -1,10 +1,14 @@
 import { director } from 'cc';
 
 // ===================== 派别枚举 =====================
+// 0/1/3/4 为玩家阵营，2 为中立（与服务器 game/constants.go 一致）。
+// P3/P4 仅在线 FFA 模式使用（经 OnlineController 阵营重映射后出现在本地数据中），单机模式不会出现。
 export enum Faction {
     PLAYER = 0,
     ENEMY = 1,
     NEUTRAL = 2,
+    P3 = 3,
+    P4 = 4,
 }
 
 // ===================== 星球配置 =====================

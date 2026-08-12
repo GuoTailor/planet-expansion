@@ -4,6 +4,8 @@ import { DESIGN_HEIGHT, DESIGN_WIDTH } from './core/GameConstants';
 import { setupPortraitCanvas } from './core/ScreenAdapter';
 import { Starfield } from './core/Starfield';
 import { createButton, createLabel, createUINode, makeClickable } from './core/UIHelper';
+import { NetClient } from './network/NetClient';
+import { ErrorMsg, MatchFoundMsg, MatchMode, NET_EVENTS } from './network/Protocol';
 
 const { ccclass } = _decorator;
 
@@ -11,6 +13,8 @@ const { ccclass } = _decorator;
 enum MenuState {
     MAIN,
     LEVEL_SELECT,
+    ONLINE_MODE,
+    MATCHING,
 }
 
 /**
@@ -35,6 +39,14 @@ export class MenuScene extends Component {
     private starfield: Starfield | null = null;
     private levelButtons: Node[] = [];
 
+    // ==================== 在线对战 UI ====================
+    private onlineModeLayer: Node | null = null;
+    private matchingLayer: Node | null = null;
+    private matchingStatusLabel: Label | null = null;
+    private lastMode: MatchMode = 'duel';
+    /** 匹配流程代数：取消匹配后使进行中的异步登录/连接流程失效 */
+    private matchGen = 0;
+
     start() {
         // MenuScene 由 GameScene 安装到 Canvas 节点上
         const canvas = setupPortraitCanvas(this.node).node;
@@ -48,11 +60,18 @@ export class MenuScene extends Component {
 
         this.initMainMenu(canvas);
         this.initLevelSelect(canvas);
+        this.initOnlineModeSelect(canvas);
+        this.initMatchingLayer(canvas);
         this.setVisible(true);
 
         director.on('show_menu', this.onShowMenu, this);
         director.on('start_level', this.onStartLevel, this);
         director.on(EVENT_LEVELS_CHANGED, this.onLevelsChanged, this);
+        director.on('online_rematch', this.onOnlineRematch, this);
+        director.on(NET_EVENTS.MATCH_FOUND, this.onNetMatchFound, this);
+        director.on(NET_EVENTS.MATCH_CANCELLED, this.onNetMatchCancelled, this);
+        director.on(NET_EVENTS.MATCHING, this.onNetMatching, this);
+        director.on(NET_EVENTS.ERROR, this.onNetError, this);
     }
 
     update(dt: number) {
@@ -88,19 +107,78 @@ export class MenuScene extends Component {
         sub.node.setPosition(0, DESIGN_HEIGHT / 2 - 180, 0);
 
         const startBtn = createButton('开始游戏', 260, 55, 24);
-        startBtn.setPosition(0, -10, 0);
+        startBtn.setPosition(0, 25, 0);
         this.mainMenuLayer.addChild(startBtn);
         makeClickable(startBtn, this, () => this.startGame(1));
 
+        const onlineBtn = createButton('在线对战', 260, 55, 24);
+        onlineBtn.setPosition(0, -50, 0);
+        this.mainMenuLayer.addChild(onlineBtn);
+        makeClickable(onlineBtn, this, () => this.showOnlineModeSelect());
+
         const levelBtn = createButton('关卡选择', 260, 55, 24);
-        levelBtn.setPosition(0, -80, 0);
+        levelBtn.setPosition(0, -125, 0);
         this.mainMenuLayer.addChild(levelBtn);
         makeClickable(levelBtn, this, () => this.showLevelSelect());
 
         const help = createLabel(this.mainMenuLayer, 'Help', '操作说明：拖拽蓝色星球至目标建立连接 | 滑动划过连接线断开连接',
             14, new Color(150, 170, 200, 160), 700, 80);
         help.overflow = Label.Overflow.SHRINK;
-        help.node.setPosition(0, -200, 0);
+        help.node.setPosition(0, -235, 0);
+    }
+
+    // ==================== 在线对战：模式选择 =====================
+    private initOnlineModeSelect(canvas: Node) {
+        this.onlineModeLayer = createUINode('OnlineModeSelect', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+        this.onlineModeLayer.active = false;
+
+        const title = createLabel(this.onlineModeLayer, 'OnlineTitle', '在线对战', 36, new Color(100, 200, 255, 255), 400, 40);
+        title.node.setPosition(0, DESIGN_HEIGHT / 2 - 120, 0);
+
+        const duelBtn = createButton('1v1 决斗', 280, 55, 24);
+        duelBtn.setPosition(0, 80, 0);
+        this.onlineModeLayer.addChild(duelBtn);
+        makeClickable(duelBtn, this, () => this.startOnline('duel'));
+
+        const duelDesc = createLabel(this.onlineModeLayer, 'DuelDesc', '与一名对手一决高下（计积分）', 13,
+            new Color(150, 170, 200, 160), 500, 25);
+        duelDesc.node.setPosition(0, 45, 0);
+
+        const ffaBtn = createButton('4 人混战 (FFA)', 280, 55, 24);
+        ffaBtn.setPosition(0, -20, 0);
+        this.onlineModeLayer.addChild(ffaBtn);
+        makeClickable(ffaBtn, this, () => this.startOnline('ffa'));
+
+        const ffaDesc = createLabel(this.onlineModeLayer, 'FFADesc', '四名玩家各自为战，活到最后（全真人局计积分）', 13,
+            new Color(150, 170, 200, 160), 500, 25);
+        ffaDesc.node.setPosition(0, -55, 0);
+
+        const tip = createLabel(this.onlineModeLayer, 'Tip', '匹配等待超时将由 AI 补位，随时都能开局', 13,
+            new Color(255, 200, 100, 180), 500, 25);
+        tip.node.setPosition(0, -120, 0);
+
+        const backBtn = createButton('返回', 180, 45, 20);
+        backBtn.setPosition(0, -DESIGN_HEIGHT / 2 + 60, 0);
+        this.onlineModeLayer.addChild(backBtn);
+        makeClickable(backBtn, this, () => this.showMainMenu());
+    }
+
+    // ==================== 在线对战：匹配中 =====================
+    private initMatchingLayer(canvas: Node) {
+        this.matchingLayer = createUINode('Matching', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+        this.matchingLayer.active = false;
+
+        const title = createLabel(this.matchingLayer, 'MatchingTitle', '在线对战', 36, new Color(100, 200, 255, 255), 400, 40);
+        title.node.setPosition(0, DESIGN_HEIGHT / 2 - 120, 0);
+
+        this.matchingStatusLabel = createLabel(this.matchingLayer, 'MatchingStatus', '匹配中...', 18,
+            new Color(220, 230, 255, 220), 600, 80);
+        this.matchingStatusLabel.node.setPosition(0, 0, 0);
+
+        const cancelBtn = createButton('取消匹配', 220, 50, 20);
+        cancelBtn.setPosition(0, -DESIGN_HEIGHT / 2 + 60, 0);
+        this.matchingLayer.addChild(cancelBtn);
+        makeClickable(cancelBtn, this, () => this.cancelMatching());
     }
 
     // ==================== 关卡选择 =====================
@@ -205,20 +283,97 @@ export class MenuScene extends Component {
         return node;
     }
 
+    // ==================== 在线对战：流程 ====================
+    private startOnline(mode: MatchMode) {
+        this.lastMode = mode;
+        const gen = ++this.matchGen;
+        this.showMatching('正在登录...');
+        const net = NetClient.instance;
+        (async () => {
+            try {
+                if (!net.loggedIn) await net.login();
+                if (gen !== this.matchGen) return;
+                this.setMatchingStatus('正在连接服务器...');
+                await net.connect();
+                if (gen !== this.matchGen) return;
+                this.setMatchingStatus('匹配中，寻找对手...\n（超时将由 AI 补位）');
+                net.sendMatch(mode);
+            } catch (err: any) {
+                if (gen !== this.matchGen) return;
+                this.setMatchingStatus(`无法开始在线对战：${err?.message ?? err}\n请检查服务器后重试`);
+            }
+        })();
+    }
+
+    private cancelMatching() {
+        this.matchGen++;
+        NetClient.instance.cancelMatch();
+        this.showOnlineModeSelect();
+    }
+
+    private showOnlineModeSelect() {
+        this.menuState = MenuState.ONLINE_MODE;
+        this.setLayerActive(this.onlineModeLayer);
+    }
+
+    private showMatching(status: string) {
+        this.menuState = MenuState.MATCHING;
+        this.setLayerActive(this.matchingLayer);
+        this.setMatchingStatus(status);
+    }
+
+    private setMatchingStatus(text: string) {
+        if (this.matchingStatusLabel) this.matchingStatusLabel.string = text;
+    }
+
+    /** 统一切换子层：只激活指定层，其余关闭 */
+    private setLayerActive(active: Node | null) {
+        for (const layer of [this.mainMenuLayer, this.levelSelectLayer, this.onlineModeLayer, this.matchingLayer]) {
+            if (layer) layer.active = layer === active;
+        }
+    }
+
+    // ==================== 在线对战：网络事件 ====================
+    private onNetMatchFound(msg: MatchFoundMsg) {
+        // 菜单可见但不在匹配中 → 过期消息（如取消后到达），忽略
+        if (this.menuVisible && this.menuState !== MenuState.MATCHING) return;
+        // 匹配成功（或对局中重连恢复）：隐藏菜单，交由 GameManager 开局
+        this.setVisible(false);
+        director.emit('start_online_match', msg);
+    }
+
+    private onNetMatchCancelled() {
+        if (this.menuState === MenuState.MATCHING) this.showOnlineModeSelect();
+    }
+
+    private onNetMatching() {
+        if (this.menuState === MenuState.MATCHING) {
+            this.setMatchingStatus('匹配中，寻找对手...\n（超时将由 AI 补位）');
+        }
+    }
+
+    private onNetError(msg: ErrorMsg) {
+        if (this.menuState === MenuState.MATCHING) {
+            this.setMatchingStatus(msg.text);
+        }
+    }
+
+    /** 结算面板"再来一局"：回到菜单并自动重新匹配上一模式 */
+    private onOnlineRematch() {
+        this.setVisible(true);
+        this.startOnline(this.lastMode);
+    }
+
     // ==================== 状态切换 ====================
     private showMainMenu() {
         this.menuState = MenuState.MAIN;
-        if (this.mainMenuLayer) this.mainMenuLayer.active = true;
-        if (this.levelSelectLayer) this.levelSelectLayer.active = false;
+        this.setLayerActive(this.mainMenuLayer);
     }
 
     private showLevelSelect() {
         this.menuState = MenuState.LEVEL_SELECT;
-        if (this.mainMenuLayer) this.mainMenuLayer.active = false;
-        if (this.levelSelectLayer) {
-            this.levelSelectLayer.active = true;
-            this.refreshLevelButtons();
-        }
+        this.setLayerActive(this.levelSelectLayer);
+        this.refreshLevelButtons();
     }
 
     private startGame(levelId: number) {
@@ -228,11 +383,17 @@ export class MenuScene extends Component {
 
     public setVisible(visible: boolean) {
         if (this.bgLayer) this.bgLayer.active = visible;
-        if (this.mainMenuLayer) this.mainMenuLayer.active = visible;
-        if (this.levelSelectLayer) this.levelSelectLayer.active = visible;
+        if (!visible) {
+            if (this.mainMenuLayer) this.mainMenuLayer.active = false;
+            if (this.levelSelectLayer) this.levelSelectLayer.active = false;
+            if (this.onlineModeLayer) this.onlineModeLayer.active = false;
+            if (this.matchingLayer) this.matchingLayer.active = false;
+        }
         this.menuVisible = visible;
         if (visible) {
             if (this.menuState === MenuState.LEVEL_SELECT) this.showLevelSelect();
+            else if (this.menuState === MenuState.ONLINE_MODE) this.showOnlineModeSelect();
+            else if (this.menuState === MenuState.MATCHING) this.setLayerActive(this.matchingLayer);
             else this.showMainMenu();
         }
     }
@@ -241,6 +402,11 @@ export class MenuScene extends Component {
         director.off('show_menu', this.onShowMenu, this);
         director.off('start_level', this.onStartLevel, this);
         director.off(EVENT_LEVELS_CHANGED, this.onLevelsChanged, this);
+        director.off('online_rematch', this.onOnlineRematch, this);
+        director.off(NET_EVENTS.MATCH_FOUND, this.onNetMatchFound, this);
+        director.off(NET_EVENTS.MATCH_CANCELLED, this.onNetMatchCancelled, this);
+        director.off(NET_EVENTS.MATCHING, this.onNetMatching, this);
+        director.off(NET_EVENTS.ERROR, this.onNetError, this);
     }
 }
 

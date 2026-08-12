@@ -29,6 +29,19 @@ import { ConnectionData, ConnectionView } from './game/Connection';
 import { PlanetData, PlanetView } from './game/Planet';
 import { ResultPanel } from './game/ResultPanel';
 import { TouchController } from './game/TouchController';
+import { NetClient } from './network/NetClient';
+import { OnlineController } from './network/OnlineController';
+import {
+    CaptureMsg,
+    CountdownMsg,
+    EventMsg,
+    GameOverMsg,
+    MatchFoundMsg,
+    MatchMode,
+    NET_EVENTS,
+    PlayerFactionMsg,
+    SnapshotMsg,
+} from './network/Protocol';
 
 const { ccclass } = _decorator;
 
@@ -68,6 +81,12 @@ export class GameManager extends Component {
     // ==================== 交互状态 ====================
     private cutHighlightId = -1;
 
+    // ==================== 在线对战状态 ====================
+    /** 在线模式：权威逻辑在服务器，本地只做插值渲染与输入上报 */
+    private onlineMode = false;
+    private onlineCtl: OnlineController | null = null;
+    private onlineMatchMode: MatchMode = 'duel';
+
     // ==================== 层级与子系统 ====================
     private canvasUITransform: UITransform | null = null;
     private gameLayer: Node | null = null;
@@ -95,6 +114,16 @@ export class GameManager extends Component {
         this.touch.attach();
         director.on('start_level', this.onStartLevel, this);
         director.on('show_menu', this.onShowMenu, this);
+        director.on('start_online_match', this.onStartOnlineMatch, this);
+        director.on(NET_EVENTS.SNAPSHOT, this.onNetSnapshot, this);
+        director.on(NET_EVENTS.COUNTDOWN, this.onNetCountdown, this);
+        director.on(NET_EVENTS.EVENT, this.onNetEvent, this);
+        director.on(NET_EVENTS.CAPTURE, this.onNetCapture, this);
+        director.on(NET_EVENTS.GAME_OVER, this.onNetGameOver, this);
+        director.on(NET_EVENTS.PLAYER_DISCONNECTED, this.onNetPlayerDisconnected, this);
+        director.on(NET_EVENTS.PLAYER_RECONNECTED, this.onNetPlayerReconnected, this);
+        director.on(NET_EVENTS.RECONNECTING, this.onNetReconnecting, this);
+        director.on(NET_EVENTS.DISCONNECTED, this.onNetDisconnected, this);
         this.setGameLayerVisible(false);
     }
 
@@ -134,17 +163,33 @@ export class GameManager extends Component {
         // 结算面板
         this.resultPanel = new ResultPanel(canvas, this, {
             onNext: () => this.goNextLevel(),
-            onRestart: () => this.restartCurrentLevel(),
+            onRestart: () => {
+                if (this.onlineMode) {
+                    // 在线结算"再来一局"：退出本局画面，回到菜单重新匹配
+                    this.onlineMode = false;
+                    this.setGameLayerVisible(false);
+                    this.isGameActive = false;
+                    director.emit('online_rematch');
+                } else {
+                    this.restartCurrentLevel();
+                }
+            },
             onMenu: () => director.emit('show_menu'),
         });
     }
 
     // ==================== 事件 ====================
     private onStartLevel(levelId: number) {
+        this.onlineMode = false;
         this.loadLevel(levelId);
     }
 
     private onShowMenu() {
+        // 在线对局中途返回菜单 = 投降
+        if (this.onlineMode && !this.gameOver) {
+            NetClient.instance.leaveRoom();
+        }
+        this.onlineMode = false;
         this.setGameLayerVisible(false);
         this.isGameActive = false;
         if (this.touch) this.touch.enabled = false;
@@ -206,6 +251,8 @@ export class GameManager extends Component {
         this.attackTimer = 0;
         this.ai.reset();
         this.resultPanel?.hide();
+        this.onlineCtl?.reset();
+        this.onlineCtl = null;
     }
 
     // ==================== 触摸/AI 委托 ====================
@@ -214,8 +261,14 @@ export class GameManager extends Component {
             pickPlanet: (pos: Vec2) => this.pickPlanet(pos),
             getPlanets: () => this.planets,
             getConnections: () => this.connections,
-            createConnection: (from: PlanetData, to: PlanetData) => this.tryCreateConnection(from, to, false),
-            cutConnection: (conn: ConnectionData, cutPos: Vec2) => this.breakConnection(conn, cutPos),
+            createConnection: (from: PlanetData, to: PlanetData) => {
+                if (this.onlineMode) NetClient.instance.sendDrag(from.id, to.id);
+                else this.tryCreateConnection(from, to, false);
+            },
+            cutConnection: (conn: ConnectionData, cutPos: Vec2) => {
+                if (this.onlineMode) NetClient.instance.sendCut(conn.id, cutPos.x, cutPos.y);
+                else this.breakConnection(conn, cutPos);
+            },
             reportStatus: (text: string) => this.setStatus(text),
             setCutHighlight: (connId: number) => { this.cutHighlightId = connId; },
         };
@@ -445,6 +498,92 @@ export class GameManager extends Component {
         }
     }
 
+    // ==================== 在线对战：开局与网络事件 ====================
+    private onStartOnlineMatch(msg: MatchFoundMsg) {
+        this.clearGame();
+        this.onlineMode = true;
+        this.onlineMatchMode = msg.mode;
+        this.currentLevelData = msg.level;
+
+        // 阵营重映射 + 构建星球（己方恒为 PLAYER 视觉）
+        this.onlineCtl = new OnlineController(
+            this.planets, this.connections, this.attackWaves,
+            this.connectionLayer!, this.attackLayer!,
+        );
+        this.onlineCtl.setup(msg);
+        for (const data of this.planets) {
+            PlanetView.create(this.gameLayer!, data);
+        }
+
+        const opponents = msg.players
+            .filter(p => p.faction !== msg.yourFaction)
+            .map(p => `${p.nickname}${p.isAI ? '(AI)' : ''}`)
+            .join('、');
+        if (this.levelLabel) {
+            this.levelLabel.string = `在线对战 - ${msg.level.name}`;
+        }
+        this.setStatus(`对手：${opponents}`);
+
+        this.gameStartTime = this.totalTime;
+        this.isGameActive = true;
+        if (this.touch) this.touch.enabled = true;
+        this.setGameLayerVisible(true);
+    }
+
+    private onNetSnapshot(msg: SnapshotMsg) {
+        if (this.onlineMode) this.onlineCtl?.onSnapshot(msg);
+    }
+
+    private onNetCountdown(msg: CountdownMsg) {
+        if (!this.onlineMode) return;
+        this.setStatus(`对战开始倒计时 ${msg.seconds}...`);
+    }
+
+    private onNetEvent(msg: EventMsg) {
+        if (!this.onlineMode) return;
+        this.setStatus(msg.text);
+    }
+
+    private onNetCapture(msg: CaptureMsg) {
+        if (!this.onlineMode || !this.onlineCtl) return;
+        const local = this.onlineCtl.toLocalFaction(msg.faction);
+        this.setStatus(`${FACTION_NAMES[local] ?? '未知'}占领了星球！`);
+    }
+
+    private onNetPlayerDisconnected(msg: PlayerFactionMsg) {
+        if (!this.onlineMode || !this.onlineCtl) return;
+        const local = this.onlineCtl.toLocalFaction(msg.faction);
+        this.setStatus(`${FACTION_NAMES[local] ?? '对手'}玩家掉线，等待重连...`);
+    }
+
+    private onNetPlayerReconnected(msg: PlayerFactionMsg) {
+        if (!this.onlineMode || !this.onlineCtl) return;
+        const local = this.onlineCtl.toLocalFaction(msg.faction);
+        this.setStatus(`${FACTION_NAMES[local] ?? '对手'}玩家已重连`);
+    }
+
+    private onNetReconnecting() {
+        if (!this.onlineMode) return;
+        this.setStatus('连接中断，正在自动重连...');
+    }
+
+    private onNetDisconnected() {
+        // 重连失败（服务器已判负）：结束对局并提示
+        if (!this.onlineMode || this.gameOver) return;
+        this.gameOver = true;
+        if (this.touch) this.touch.enabled = false;
+        this.resultPanel?.showOnline(false, 0, 0, false, 0, this.onlineMatchMode, '连接已断开，对局结束');
+    }
+
+    private onNetGameOver(msg: GameOverMsg) {
+        if (!this.onlineMode) return;
+        this.gameOver = true;
+        if (this.touch) this.touch.enabled = false;
+        this.resultPanel?.showOnline(
+            msg.won, msg.placement, msg.ratingChange, msg.rated, msg.durationSec, this.onlineMatchMode,
+        );
+    }
+
     // ==================== 每帧更新 ====================
     update(dt: number) {
         if (!this.isGameActive) return;
@@ -453,6 +592,14 @@ export class GameManager extends Component {
         this.starfield?.render(this.totalTime);
 
         if (this.gameOver) return;
+
+        if (this.onlineMode) {
+            // 在线模式：权威逻辑在服务器，本地仅插值 + 渲染
+            this.onlineCtl?.update(dt);
+            this.redrawConnections();
+            this.updatePlanetVisuals();
+            return;
+        }
 
         this.updateConnections(dt);
         this.updateAttackWaves(dt);
@@ -802,5 +949,15 @@ export class GameManager extends Component {
         this.touch?.detach();
         director.off('start_level', this.onStartLevel, this);
         director.off('show_menu', this.onShowMenu, this);
+        director.off('start_online_match', this.onStartOnlineMatch, this);
+        director.off(NET_EVENTS.SNAPSHOT, this.onNetSnapshot, this);
+        director.off(NET_EVENTS.COUNTDOWN, this.onNetCountdown, this);
+        director.off(NET_EVENTS.EVENT, this.onNetEvent, this);
+        director.off(NET_EVENTS.CAPTURE, this.onNetCapture, this);
+        director.off(NET_EVENTS.GAME_OVER, this.onNetGameOver, this);
+        director.off(NET_EVENTS.PLAYER_DISCONNECTED, this.onNetPlayerDisconnected, this);
+        director.off(NET_EVENTS.PLAYER_RECONNECTED, this.onNetPlayerReconnected, this);
+        director.off(NET_EVENTS.RECONNECTING, this.onNetReconnecting, this);
+        director.off(NET_EVENTS.DISCONNECTED, this.onNetDisconnected, this);
     }
 }

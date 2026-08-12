@@ -1,0 +1,6 @@
+# 本地配置（含密钥，勿提交）
+config.yaml
+# 构建产物
+conquest-server
+conquest-server.exe
+/bin/

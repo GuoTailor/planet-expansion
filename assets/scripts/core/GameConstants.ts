@@ -22,18 +22,25 @@ export const FACTION_COLORS: Record<number, Color> = {
     [Faction.PLAYER]: new Color(80, 180, 255, 255),
     [Faction.ENEMY]: new Color(255, 80, 80, 255),
     [Faction.NEUTRAL]: new Color(180, 180, 180, 255),
+    // FFA 第三/四方玩家（绿/黄）
+    [Faction.P3]: new Color(80, 220, 120, 255),
+    [Faction.P4]: new Color(255, 200, 60, 255),
 };
 
 export const FACTION_COLORS_DARK: Record<number, Color> = {
     [Faction.PLAYER]: new Color(30, 80, 180, 255),
     [Faction.ENEMY]: new Color(160, 30, 30, 255),
     [Faction.NEUTRAL]: new Color(100, 100, 100, 255),
+    [Faction.P3]: new Color(30, 130, 60, 255),
+    [Faction.P4]: new Color(170, 120, 20, 255),
 };
 
 export const FACTION_NAMES: Record<number, string> = {
     [Faction.PLAYER]: '我方',
     [Faction.ENEMY]: '敌方',
     [Faction.NEUTRAL]: '中立',
+    [Faction.P3]: '绿方',
+    [Faction.P4]: '黄方',
 };
 
 // ===================== 全局调参 =====================
