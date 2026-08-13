@@ -221,7 +221,6 @@ export class OnlineController {
                 wave.pos.set(ws.x, ws.y);
             }
             wave.view?.syncPosition(wave.pos);
-            wave.view?.setAmount(wave.amount);
         }
     }
 

@@ -46,4 +46,8 @@ const (
 	ConnectionSpeed = 0.4
 	// 墙厚度（逻辑像素）；连接路线距墙芯小于半个厚度即视为被阻挡
 	WallThickness = 14.0
+	// 攻击波单次发送人口（固定为 1，不再打包发送多个人口）
+	WavePopPerSend = 1.0
+	// 攻击波发送累加器上限，防止长时间卡顿后爆发式补发
+	WaveMaxAccum = 2.0
 )

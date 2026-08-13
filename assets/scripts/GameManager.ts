@@ -78,7 +78,7 @@ export class GameManager extends Component {
     private currentLevelData: LevelData | null = null;
 
     private growTimer = 0;
-    private attackTimer = 0;
+    private waveBaseRate = 0;
     private totalTime = 0;
     private gameStartTime = 0;
 
@@ -303,7 +303,7 @@ export class GameManager extends Component {
         this.gameOver = false;
         this.cutHighlightId = -1;
         this.growTimer = 0;
-        this.attackTimer = 0;
+        this.waveBaseRate = this.sendRatio / this.attackInterval;
         this.ai.reset();
         this.resultPanel?.hide();
         this.onlineCtl?.reset();
@@ -992,11 +992,7 @@ export class GameManager extends Component {
 
     // ==================== 攻击波更新 ====================
     private updateAttackWaves(dt: number) {
-        this.attackTimer += dt;
-        if (this.attackTimer >= this.attackInterval) {
-            this.attackTimer = 0;
-            this.sendAttackWaves();
-        }
+        this.emitAttackWaves(dt);
 
         for (const wave of this.attackWaves) {
             if (wave.done) continue;
@@ -1025,7 +1021,6 @@ export class GameManager extends Component {
                 wave.pos.y += dy * step;
                 if (wave.view) {
                     wave.view.syncPosition(wave.pos);
-                    wave.view.setAmount(wave.amount);
                 }
             }
         }
@@ -1038,32 +1033,40 @@ export class GameManager extends Component {
         }
     }
 
-    private sendAttackWaves() {
-        // 先统计每个星球的出度，用于均分人口溢出池
-        const outCounts = new Map<number, number>();
-        for (const conn of this.connections) {
-            if (conn.active && conn.reached && conn.fromPlanet.faction === conn.faction) {
-                outCounts.set(conn.fromPlanet.id, (outCounts.get(conn.fromPlanet.id) ?? 0) + 1);
-            }
-        }
-
+    private emitAttackWaves(dt: number) {
         for (const conn of this.connections) {
             if (!conn.active || !conn.reached) continue;
             const fromPlanet = conn.fromPlanet;
             if (fromPlanet.faction !== conn.faction) continue;
 
-            let sendAmount = 0;
-            if (fromPlanet.population >= 3) {
-                sendAmount = Math.max(1, Math.floor(fromPlanet.population * this.sendRatio));
+            // 可用人口 = 星球人口 + 溢出池（满人口后的盈余）；二者近乎为空时不发送
+            const avail = fromPlanet.population + fromPlanet.overflowPool;
+            if (avail <= 1) {
+                conn.sendAccum = 0;
+                continue;
             }
-            const overflowShare = fromPlanet.overflowPool / (outCounts.get(fromPlanet.id) ?? 1);
-            const totalSend = sendAmount + overflowShare;
-            if (totalSend <= 0) continue;
 
-            this.createAndSendWave(conn, totalSend);
+            // 发送速率与可用人口成正比：人口越多，攻击波发得越快；每次仅发 1 个人口，
+            // 累加器每满 1 即发一波，使各连接发送间隔尽量均匀。
+            const rate = this.waveBaseRate * avail; // 每秒攻击波数
+            conn.sendAccum += dt * rate;
+            if (conn.sendAccum > TUNING.WAVE_MAX_ACCUM) conn.sendAccum = TUNING.WAVE_MAX_ACCUM;
+
+            while (conn.sendAccum >= 1) {
+                // 优先从星球人口扣除（保留至少 1 作为防御），不足再从溢出池扣
+                if (fromPlanet.population > 1) {
+                    fromPlanet.population -= 1;
+                } else if (fromPlanet.overflowPool >= 1) {
+                    fromPlanet.overflowPool -= 1;
+                } else {
+                    conn.sendAccum = 0;
+                    break;
+                }
+                conn.sendAccum -= 1;
+                this.createAndSendWave(conn, TUNING.WAVE_POP_PER_SEND);
+                this.refreshPop(fromPlanet);
+            }
         }
-
-        for (const p of this.planets) p.overflowPool = 0;
     }
 
     private createAndSendWave(conn: ConnectionData, amount: number) {

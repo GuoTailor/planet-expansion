@@ -20,9 +20,9 @@ type Engine struct {
 	attackInterval float64
 	sendRatio      float64
 
-	growTimer   float64
-	attackTimer float64
-	TotalTime   float64
+	growTimer    float64
+	waveBaseRate float64
+	TotalTime    float64
 
 	nextConnectionID int
 	nextWaveID       int
@@ -46,6 +46,7 @@ func NewEngine(level *LevelData) *Engine {
 	e := &Engine{
 		attackInterval: level.AttackInterval,
 		sendRatio:      level.SendRatio,
+		waveBaseRate:   level.SendRatio / level.AttackInterval,
 		WinnerFaction:  -1,
 		aliveFactions:  make(map[int]bool),
 	}
@@ -178,6 +179,7 @@ func (e *Engine) TryCreateConnection(from, to *Planet, silent bool) {
 		CollidedProgress: CollisionPoint,
 		PairedConnID:     -1,
 		PushBackTarget:   -1,
+		SendAccum:        0,
 	}
 	e.nextConnectionID++
 	e.Connections = append(e.Connections, conn)
@@ -556,11 +558,7 @@ func (e *Engine) refundToProgress(conn *Connection, fromPlanet *Planet) {
 
 // ===================== 攻击波更新（updateAttackWaves） =====================
 func (e *Engine) updateAttackWaves(dt float64) {
-	e.attackTimer += dt
-	if e.attackTimer >= e.attackInterval {
-		e.attackTimer = 0
-		e.sendAttackWaves()
-	}
+	e.emitAttackWaves(dt)
 
 	for _, wave := range e.Waves {
 		if wave.Done {
@@ -599,15 +597,7 @@ func (e *Engine) updateAttackWaves(dt float64) {
 	}
 }
 
-func (e *Engine) sendAttackWaves() {
-	// 先统计每个星球的出度，用于均分人口溢出池
-	outCounts := make(map[int]int)
-	for _, conn := range e.Connections {
-		if conn.Active && conn.Reached && conn.From.Faction == conn.Faction {
-			outCounts[conn.From.ID]++
-		}
-	}
-
+func (e *Engine) emitAttackWaves(dt float64) {
 	for _, conn := range e.Connections {
 		if !conn.Active || !conn.Reached {
 			continue
@@ -617,25 +607,34 @@ func (e *Engine) sendAttackWaves() {
 			continue
 		}
 
-		sendAmount := 0.0
-		if fromPlanet.Population >= 3 {
-			sendAmount = math.Max(1, math.Floor(fromPlanet.Population*e.sendRatio))
-		}
-		outCount := outCounts[fromPlanet.ID]
-		if outCount == 0 {
-			outCount = 1
-		}
-		overflowShare := fromPlanet.OverflowPool / float64(outCount)
-		totalSend := sendAmount + overflowShare
-		if totalSend <= 0 {
+		// 可用人口 = 星球人口 + 溢出池（满人口后的盈余）；二者近乎为空时不发送
+		avail := fromPlanet.Population + fromPlanet.OverflowPool
+		if avail <= 1 {
+			conn.SendAccum = 0
 			continue
 		}
 
-		e.createAndSendWave(conn, totalSend)
-	}
+		// 发送速率与可用人口成正比：人口越多，攻击波发得越快；每次仅发 1 个人口，
+		// 累加器每满 1 即发一波，使各连接发送间隔尽量均匀。
+		rate := e.waveBaseRate * avail // 每秒攻击波数
+		conn.SendAccum += dt * rate
+		if conn.SendAccum > WaveMaxAccum {
+			conn.SendAccum = WaveMaxAccum
+		}
 
-	for _, p := range e.Planets {
-		p.OverflowPool = 0
+		for conn.SendAccum >= 1 {
+			// 优先从星球人口扣除（保留至少 1 作为防御），不足再从溢出池扣
+			if fromPlanet.Population > 1 {
+				fromPlanet.Population -= 1
+			} else if fromPlanet.OverflowPool >= 1 {
+				fromPlanet.OverflowPool -= 1
+			} else {
+				conn.SendAccum = 0
+				break
+			}
+			conn.SendAccum -= 1
+			e.createAndSendWave(conn, WavePopPerSend)
+		}
 	}
 }
 

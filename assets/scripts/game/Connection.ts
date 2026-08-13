@@ -37,6 +37,11 @@ export class ConnectionData {
     pairedConnId: number = -1;
     /** 被顶回的目标进度（渐变缩回，非瞬间跳转），-1 表示未被顶回 */
     pushBackTarget: number = -1;
+    /**
+     * 攻击波发送累加器（单位：攻击波数）。每帧按星球可用人口累加，
+     * 达到 1 即发出 1 个人口的攻击波，使发送间隔尽量均匀、人口越多发得越快。
+     */
+    sendAccum: number = 0;
     view: ConnectionView | null = null;
 }
 

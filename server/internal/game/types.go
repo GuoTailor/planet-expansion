@@ -44,6 +44,8 @@ type Connection struct {
 	PairedConnID     int
 	// 被顶回的目标进度（渐变缩回，非瞬间跳转），-1 表示未被顶回
 	PushBackTarget float64
+	// 攻击波发送累加器（单位：攻击波数）；每帧按星球可用人口累加，达到 1 即发 1 个人口的攻击波
+	SendAccum float64
 }
 
 // AttackWave 攻击波数据（对应 AttackWave；服务器侧增加了 ID 供客户端同步实体生命周期）
