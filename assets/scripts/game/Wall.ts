@@ -1,18 +1,18 @@
 import { Color, Graphics, Vec2 } from 'cc';
-import { HALF_EXTENT_X, HALF_EXTENT_Y, TUNING } from '../core/GameConstants';
+import { TUNING } from '../core/GameConstants';
 
 // ===================== 墙配置 =====================
-// 坐标为归一化竖屏坐标 nx/ny ∈ [-1, 1]（与星球一致），运行时映射为逻辑坐标。
+// 坐标为大地图世界绝对坐标（与星球一致），原点在屏幕中心、y 轴向上为正。
 // 墙是一段障碍物：若连接路线（线段）穿过墙，则视为被阻挡、无法建立连接。
 export interface WallConfig {
-    /** 端点 1 归一化水平坐标 */
-    nx1: number;
-    /** 端点 1 归一化垂直坐标 */
-    ny1: number;
-    /** 端点 2 归一化水平坐标 */
-    nx2: number;
-    /** 端点 2 归一化垂直坐标 */
-    ny2: number;
+    /** 端点 1 世界绝对 x 坐标 */
+    x1: number;
+    /** 端点 1 世界绝对 y 坐标 */
+    y1: number;
+    /** 端点 2 世界绝对 x 坐标 */
+    x2: number;
+    /** 端点 2 世界绝对 y 坐标 */
+    y2: number;
 }
 
 // ===================== 墙数据（逻辑坐标） =====================
@@ -22,9 +22,9 @@ export class WallData {
 
     static fromConfig(cfg: WallConfig): WallData {
         const w = new WallData();
-        // 归一化坐标 → 大地图世界坐标（与星球同步缩放）
-        w.a.set(cfg.nx1 * HALF_EXTENT_X * TUNING.WORLD_SCALE, cfg.ny1 * HALF_EXTENT_Y * TUNING.WORLD_SCALE);
-        w.b.set(cfg.nx2 * HALF_EXTENT_X * TUNING.WORLD_SCALE, cfg.ny2 * HALF_EXTENT_Y * TUNING.WORLD_SCALE);
+        // 大地图世界绝对坐标（直接使用配置值，不再做归一化换算）
+        w.a.set(cfg.x1, cfg.y1);
+        w.b.set(cfg.x2, cfg.y2);
         return w;
     }
 

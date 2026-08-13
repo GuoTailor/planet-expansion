@@ -52,8 +52,8 @@ func NewEngine(level *LevelData) *Engine {
 	for i, cfg := range level.Planets {
 		p := &Planet{
 			ID:            i,
-			X:             cfg.NX * HalfExtentX * WorldScale,
-			Y:             cfg.NY * HalfExtentY * WorldScale,
+			X:             cfg.X,
+			Y:             cfg.Y,
 			Radius:        (22 + cfg.MaxPopulation*0.35) * PlanetScaleFactor,
 			Faction:       cfg.Faction,
 			Population:    cfg.Population,
@@ -73,14 +73,14 @@ func NewEngine(level *LevelData) *Engine {
 		}
 	}
 
-	// 构建墙（归一化坐标 → 大地图世界坐标）
+	// 构建墙（大地图世界绝对坐标）
 	e.Walls = make([]Wall, 0, len(level.Walls))
 	for _, w := range level.Walls {
 		e.Walls = append(e.Walls, Wall{
-			X1: w.NX1 * HalfExtentX * WorldScale,
-			Y1: w.NY1 * HalfExtentY * WorldScale,
-			X2: w.NX2 * HalfExtentX * WorldScale,
-			Y2: w.NY2 * HalfExtentY * WorldScale,
+			X1: w.X1,
+			Y1: w.Y1,
+			X2: w.X2,
+			Y2: w.Y2,
 		})
 	}
 	return e

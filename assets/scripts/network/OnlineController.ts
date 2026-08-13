@@ -1,6 +1,6 @@
 import { Node } from 'cc';
 import { Faction } from '../LevelConfig';
-import { HALF_EXTENT_X, HALF_EXTENT_Y, TUNING } from '../core/GameConstants';
+import { TUNING } from '../core/GameConstants';
 import { AttackWave, AttackWaveView } from '../game/AttackWave';
 import { ConnectionData, ConnectionView } from '../game/Connection';
 import { PlanetData } from '../game/Planet';
@@ -55,8 +55,8 @@ export class OnlineController {
         msg.level.planets.forEach((cfg, i) => {
             const data = new PlanetData();
             data.id = i;
-            // 归一化坐标 → 大地图世界坐标（与单机模式同步缩放）
-            data.pos.set(cfg.nx * HALF_EXTENT_X * TUNING.WORLD_SCALE, cfg.ny * HALF_EXTENT_Y * TUNING.WORLD_SCALE);
+            // 大地图世界绝对坐标（直接使用配置值，不再做归一化换算）
+            data.pos.set(cfg.x, cfg.y);
             data.radius = (22 + cfg.maxPopulation * 0.35) * TUNING.PLANET_SCALE_FACTOR;
             data.faction = this.toLocalFaction(cfg.faction);
             data.population = cfg.population;

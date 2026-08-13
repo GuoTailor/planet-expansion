@@ -254,8 +254,8 @@ export class GameManager extends Component {
         for (const cfg of levelData.planets) {
             const data = new PlanetData();
             data.id = this.nextPlanetId++;
-            // 归一化坐标 → 大地图世界坐标（乘以 WORLD_SCALE 使世界大于屏幕）
-            data.pos.set(cfg.nx * HALF_EXTENT_X * TUNING.WORLD_SCALE, cfg.ny * HALF_EXTENT_Y * TUNING.WORLD_SCALE);
+            // 大地图世界绝对坐标（直接使用配置值，不再做归一化换算）
+            data.pos.set(cfg.x, cfg.y);
             // 星球半径缩小以适应大地图模式
             data.radius = (22 + cfg.maxPopulation * 0.35) * TUNING.PLANET_SCALE_FACTOR;
             data.faction = cfg.faction;

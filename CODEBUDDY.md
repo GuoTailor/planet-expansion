@@ -112,7 +112,7 @@ assets/scripts/
 
 ### 关卡配置（`LevelConfig.ts`）— 支持动态新增
 
-- `PlanetConfig` 使用**归一化竖屏坐标** `nx/ny ∈ [-1,1]`（原点在屏幕中心），运行时映射到 `±HALF_EXTENT_X(280) / ±HALF_EXTENT_Y(520)`，天然适配任意分辨率。
+- `PlanetConfig` 使用**大地图世界绝对坐标** `x/y`（原点在屏幕中心，y 向上为正，约 `x∈[-560,560]`、`y∈[-1040,1040]`，可超出，地图无大小限制）。运行时 `world = x` 不做换算，新增星球只写其 `x/y`，其余无需改动。
 - `LevelData` 除 `id`/`name`/`planets` 外均有默认值（按 `difficulty` 推导 `aiInterval`/`attackInterval`/`sendRatio`），新增关卡只需最少字段。
 - **动态新增关卡**：调用 `registerLevel(level)`（任意时机，含运行时；同 id 覆盖，按 id 排序），随后自动广播 `EVENT_LEVELS_CHANGED`，菜单自动刷新。查询用 `getLevels()` / `getLevelData(id)`。
 - `GameState` 静态类：当前关卡、已解锁关卡、最高分（在线积分由服务器 MySQL 持久化）。
@@ -139,7 +139,7 @@ assets/scripts/
 
 - 逻辑设计分辨率固定 **720×1280（竖屏）**，`ScreenAdapter.setupPortraitCanvas()` 设置 `designResolution` + `fitHeight`（高度铺满、宽度等比、细长屏两侧留边），并监听 `screen` 的 `window-resize` 重新适配。
 - 场景文件序列化的分辨率仍为 1280×720，由代码在运行时覆盖，**请勿手动编辑 `.scene` 文件设置分辨率**（会导致 Cocos 资源数据库无法重编译，预览报"无法查到场景 JSON 数据"）。
-- 关卡坐标为归一化坐标，与分辨率完全解耦。
+- 关卡坐标为大地图世界绝对坐标，与分辨率完全解耦；相机 `worldBounds` 由星球实际坐标实时计算，地图大小无上限。
 
 ### 服务器部署（单机）
 

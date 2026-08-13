@@ -109,7 +109,7 @@ export class MenuScene extends Component {
         const startBtn = createButton('开始游戏', 260, 55, 24);
         startBtn.setPosition(0, 25, 0);
         this.mainMenuLayer.addChild(startBtn);
-        makeClickable(startBtn, this, () => this.startGame(1));
+        makeClickable(startBtn, this, () => this.startGame(7));
 
         const onlineBtn = createButton('在线对战', 260, 55, 24);
         onlineBtn.setPosition(0, -50, 0);

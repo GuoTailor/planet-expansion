@@ -5,7 +5,7 @@ package game
 // Planet 星球数据（对应 PlanetData，pos 拆为 X/Y）
 type Planet struct {
 	ID            int
-	X, Y          float64 // 逻辑坐标（归一化坐标 × HalfExtent）
+	X, Y          float64 // 大地图世界绝对坐标
 	Radius        float64
 	Faction       int
 	Population    float64
