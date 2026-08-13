@@ -35,6 +35,9 @@ type Connection struct {
 	// 缩回时返还资源的目标星球与待返还量
 	RetractRefundPlanet *Planet
 	RetractRefundCost   float64
+	// 末端段缩回时，资源是否作为伤害作用于目标星球（异阵营：敌方/中立），
+	// true 时断开连接削弱目标而非为其补充人口
+	RetractRefundDamage bool
 	// 碰撞对峙：与敌对势力反向连接碰撞，各自只占一半
 	Collided         bool
 	CollidedProgress float64

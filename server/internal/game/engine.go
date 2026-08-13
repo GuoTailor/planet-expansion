@@ -329,6 +329,7 @@ func (e *Engine) BreakConnection(conn *Connection, cutX, cutY float64, hasCutPos
 		RetractProgressFromEnd: cutRatio,
 		RetractRefundPlanet:    toPlanet,
 		RetractRefundCost:      toRefund,
+		RetractRefundDamage:    toPlanet.Faction != conn.Faction,
 		CollidedProgress:       CollisionPoint,
 		PairedConnID:           -1,
 		PushBackTarget:         -1,
@@ -479,6 +480,31 @@ func (e *Engine) updateConnections(dt float64) {
 	}
 }
 
+// applyTailRefund 断开连接末端段缩回时对目标星球结算资源：
+//   - 异阵营（RetractRefundDamage=true，攻击敌方/中立）：作为伤害扣减目标人口；
+//     若扣减至 0 则占领该星球，并将未结算的剩余资源作为新驻军人口。
+//   - 友军增援：正常返还人口。
+func (e *Engine) applyTailRefund(conn *Connection, planet *Planet, amount float64) {
+	if conn.RetractRefundDamage {
+		original := planet.Population
+		planet.Population -= amount
+		if planet.Population <= 0 {
+			// 占领：先按标准流程翻转波/连接，再将本段剩余资源作为新驻军覆盖人口
+			totalRemaining := conn.RetractRefundCost // 尚未扣减，含本次 amount 与后续帧
+			leftover := math.Max(1, totalRemaining-original)
+			e.capturePlanet(planet, conn.Faction)
+			planet.Population = leftover
+			planet.OverflowPool = 0
+			conn.RetractRefundCost = 0
+		} else {
+			conn.RetractRefundCost -= amount
+		}
+	} else {
+		planet.Population += amount
+		conn.RetractRefundCost -= amount
+	}
+}
+
 // updateRetracting 缩回推进；返回 true 表示缩回完成
 func (e *Engine) updateRetracting(conn *Connection, dt float64) bool {
 	if conn.RetractFromEnd {
@@ -489,8 +515,7 @@ func (e *Engine) updateRetracting(conn *Connection, dt float64) bool {
 			conn.RetractProgressFromEnd = 1
 			refundPlanet := conn.RetractRefundPlanet
 			if refundPlanet != nil && conn.RetractRefundCost > 0 {
-				refundPlanet.Population += conn.RetractRefundCost
-				conn.RetractRefundCost = 0
+				e.applyTailRefund(conn, refundPlanet, conn.RetractRefundCost)
 			}
 			return true
 		}
@@ -499,8 +524,7 @@ func (e *Engine) updateRetracting(conn *Connection, dt float64) bool {
 			retractedRatio := (conn.RetractProgressFromEnd - startProgress) / (1 - startProgress)
 			refundAmount := conn.RetractRefundCost * retractedRatio
 			if refundAmount > 0.01 {
-				refundPlanet.Population += refundAmount
-				conn.RetractRefundCost -= refundAmount
+				e.applyTailRefund(conn, refundPlanet, refundAmount)
 			}
 		}
 		return false

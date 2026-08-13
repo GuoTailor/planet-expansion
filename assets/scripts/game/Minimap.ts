@@ -1,4 +1,4 @@
-import { Color, Graphics, Input, Node, UITransform, Vec2, Vec3 } from 'cc';
+import { Color,EventTouch, Graphics, Input, Node, UITransform, Vec2, Vec3 } from 'cc';
 import { Faction } from '../LevelConfig';
 import { DESIGN_HEIGHT, DESIGN_WIDTH, FACTION_COLORS, HALF_EXTENT_X, HALF_EXTENT_Y } from '../core/GameConstants';
 import { createUINode } from '../core/UIHelper';
@@ -30,6 +30,8 @@ export interface CameraViewport {
     centerX: number;
     /** 视口中心 Y（世界坐标） */
     centerY: number;
+    /** 当前缩放 */
+    zoom: number;
     /** 设置视口中心（由小地图拖拽调用） */
     setCenter(x: number, y: number): void;
 }
@@ -51,7 +53,7 @@ export class Minimap {
     private scaleY = 1;
 
     // 视口引用
-    private viewport: CameraViewport | null = null;
+    public viewport: CameraViewport | null = null;
 
     // 拖拽状态
     private isDragging = false;
@@ -148,15 +150,15 @@ export class Minimap {
         }
     }
 
-    /** 绘制当前视野范围矩形 */
+    /** 绘制当前视野范围矩形（考虑缩放） */
     private drawViewport(g: Graphics) {
         if (!this.viewport) return;
 
         const cfg = MINIMAP_CONFIG;
 
-        // 视口在世界坐标中的范围（假设视口大小为屏幕大小）
-        const viewHalfW = DESIGN_WIDTH / 2;
-        const viewHalfH = DESIGN_HEIGHT / 2;
+        // 视口在世界坐标中的范围（缩放越大视野越小）
+        const viewHalfW = DESIGN_WIDTH / 2 / this.viewport.zoom;
+        const viewHalfH = DESIGN_HEIGHT / 2 / this.viewport.zoom;
 
         const vx = this.viewport.centerX - viewHalfW;
         const vy = this.viewport.centerY - viewHalfH;
@@ -164,8 +166,8 @@ export class Minimap {
         // 转换为小地图坐标
         const mleft = this.worldToMinimapX(vx);
         const mbottom = this.worldToMinimapY(vy);
-        const mright = this.worldToMinimapX(vx + DESIGN_WIDTH);
-        const mtop = this.worldToMinimapY(vy + DESIGN_HEIGHT);
+        const mright = this.worldToMinimapX(vx + viewHalfW * 2);
+        const mtop = this.worldToMinimapY(vy + viewHalfH * 2);
 
         const mw = mright - mleft;
         const mh = mtop - mbottom;

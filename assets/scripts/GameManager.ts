@@ -114,6 +114,11 @@ export class GameManager extends Component {
     private cameraX = 0;
     /** 视口中心 Y（世界坐标） */
     private cameraY = 0;
+    /** 相机缩放（1.0 = 默认，>1 放大，<1 缩小） */
+    private cameraZoom = 1.0;
+    /** 缩放范围 */
+    private static readonly MIN_ZOOM = 0.5;
+    private static readonly MAX_ZOOM = 2.0;
     /** 世界边界 */
     private worldBounds = { left: -HALF_EXTENT_X, right: HALF_EXTENT_X, top: HALF_EXTENT_Y, bottom: -HALF_EXTENT_Y };
     private readonly aiDelegate = {
@@ -129,6 +134,12 @@ export class GameManager extends Component {
         this.setupCanvas();
         this.initLayers();
         this.touch = new TouchController(this.node, this.canvasUITransform!, this.createTouchDelegate(), this.connectionLayer!);
+        // 设置双指手势委托（拖动地图 + 缩放）
+        this.touch.setMapCameraDelegate({
+            moveCamera: (dx, dy) => this.moveCamera(dx, dy),
+            setCameraZoom: (zoom, ax, ay) => this.setCameraZoom(zoom, ax, ay),
+            getCameraZoom: () => this.cameraZoom,
+        });
         this.touch.attach();
         director.on('start_level', this.onStartLevel, this);
         director.on('show_menu', this.onShowMenu, this);
@@ -188,14 +199,13 @@ export class GameManager extends Component {
 
         // 小地图（在 UI 层之上）
         this.minimap = new Minimap(canvas);
+        const vpHolder: { mgr: GameManager | null } = { mgr: this };
         this.minimap.setViewport({
-            get centerX() { return this._mgr?.cameraX ?? 0; },
-            get centerY() { return this._mgr?.cameraY ?? 0; },
-            setCenter(x: number, y: number) { this._mgr?.setCameraCenter(x, y); },
-            _mgr: null as unknown as GameManager,
+            get centerX() { return vpHolder.mgr?.cameraX ?? 0; },
+            get centerY() { return vpHolder.mgr?.cameraY ?? 0; },
+            get zoom() { return vpHolder.mgr?.cameraZoom ?? 1; },
+            setCenter(x: number, y: number) { vpHolder.mgr?.setCameraCenter(x, y); },
         });
-        (this.minimap.viewport as any)._mgr = this;
-
         // 结算面板
         this.resultPanel = new ResultPanel(canvas, this, {
             onNext: () => this.goNextLevel(),
@@ -299,9 +309,10 @@ export class GameManager extends Component {
         this.onlineCtl?.reset();
         this.onlineCtl = null;
 
-        // 重置相机位置
+        // 重置相机位置和缩放
         this.cameraX = 0;
         this.cameraY = 0;
+        this.cameraZoom = 1.0;
     }
 
     // ==================== 大地图相机系统 ====================
@@ -359,26 +370,57 @@ export class GameManager extends Component {
         this.applyCameraTransform();
     }
 
-    /** 限制相机在世界边界内 */
+    /** 限制相机在世界边界内（考虑缩放：缩放越大视野越小，可移动范围越大） */
     private clampCamera() {
-        const halfW = DESIGN_WIDTH / 2;
-        const halfH = DESIGN_HEIGHT / 2;
+        const halfW = DESIGN_WIDTH / 2 / this.cameraZoom;
+        const halfH = DESIGN_HEIGHT / 2 / this.cameraZoom;
 
-        this.cameraX = Math.max(this.worldBounds.left + halfW, Math.min(this.worldBounds.right - halfW, this.cameraX));
-        this.cameraY = Math.max(this.worldBounds.bottom + halfH, Math.min(this.worldBounds.top - halfH, this.cameraY));
-    }
+        // 世界比视野小时，居中显示（不需要限制）
+        const worldW = this.worldBounds.right - this.worldBounds.left;
+        const worldH = this.worldBounds.top - this.worldBounds.bottom;
 
-    /** 应用相机变换到游戏世界容器 */
-    private applyCameraTransform() {
-        if (this.gameWorld) {
-            this.gameWorld.setPosition(-this.cameraX, -this.cameraY, 0);
+        if (worldW <= 2 * halfW) {
+            this.cameraX = (this.worldBounds.left + this.worldBounds.right) / 2;
+        } else {
+            this.cameraX = Math.max(this.worldBounds.left + halfW, Math.min(this.worldBounds.right - halfW, this.cameraX));
+        }
+        if (worldH <= 2 * halfH) {
+            this.cameraY = (this.worldBounds.bottom + this.worldBounds.top) / 2;
+        } else {
+            this.cameraY = Math.max(this.worldBounds.bottom + halfH, Math.min(this.worldBounds.top - halfH, this.cameraY));
         }
     }
 
-    /** 平移相机（用于拖拽） */
+    /** 应用相机变换到游戏世界容器（位置 + 缩放） */
+    private applyCameraTransform() {
+        if (this.gameWorld) {
+            this.gameWorld.setPosition(-this.cameraX * this.cameraZoom, -this.cameraY * this.cameraZoom, 0);
+            this.gameWorld.setScale(this.cameraZoom, this.cameraZoom, 1);
+        }
+    }
+
+    /** 平移相机（用于双指拖拽） */
     moveCamera(dx: number, dy: number) {
-        this.cameraX += dx;
-        this.cameraY += dy;
+        // 屏幕坐标位移 → 世界坐标位移（缩放越大，同样的屏幕位移对应更小的世界位移）
+        this.cameraX -= dx / this.cameraZoom;
+        this.cameraY -= dy / this.cameraZoom;
+        this.clampCamera();
+        this.applyCameraTransform();
+    }
+
+    /** 设置相机缩放（由双指捏合调用，anchor 为缩放中心的世界坐标） */
+    setCameraZoom(zoom: number, anchorWorldX: number, anchorWorldY: number) {
+        const oldZoom = this.cameraZoom;
+        const newZoom = Math.max(GameManager.MIN_ZOOM, Math.min(GameManager.MAX_ZOOM, zoom));
+        if (Math.abs(newZoom - oldZoom) < 0.001) return;
+
+        // 保持锚点在屏幕上的位置不变：
+        // 缩放前锚点在屏幕上的偏移 = (anchorWorldX - cameraX) * oldZoom
+        // 缩放后锚点在屏幕上的偏移 = (anchorWorldX - newCameraX) * newZoom
+        // 两者相等 → newCameraX = anchorWorldX - (anchorWorldX - cameraX) * oldZoom / newZoom
+        this.cameraX = anchorWorldX - (anchorWorldX - this.cameraX) * oldZoom / newZoom;
+        this.cameraY = anchorWorldY - (anchorWorldY - this.cameraY) * oldZoom / newZoom;
+        this.cameraZoom = newZoom;
         this.clampCamera();
         this.applyCameraTransform();
     }
@@ -402,16 +444,17 @@ export class GameManager extends Component {
             reportStatus: (text: string) => this.setStatus(text),
             setCutHighlight: (connId: number) => { this.cutHighlightId = connId; },
             screenToWorld: (sx: number, sy: number, out: Vec2) => {
-                out.set(sx + this.cameraX, sy + this.cameraY);
+                // 屏幕坐标 → 世界坐标：先除以缩放，再加相机偏移
+                out.set(sx / this.cameraZoom + this.cameraX, sy / this.cameraZoom + this.cameraY);
                 return out;
             },
         };
     }
 
     private pickPlanet(screenPos: Vec2): PlanetData | null {
-        // 将屏幕坐标转换为世界坐标（考虑相机偏移）
-        const worldX = screenPos.x + this.cameraX;
-        const worldY = screenPos.y + this.cameraY;
+        // 将屏幕坐标转换为世界坐标（考虑相机偏移和缩放）
+        const worldX = screenPos.x / this.cameraZoom + this.cameraX;
+        const worldY = screenPos.y / this.cameraZoom + this.cameraY;
 
         for (const planet of this.planets) {
             const dx = worldX - planet.pos.x;
@@ -624,6 +667,8 @@ export class GameManager extends Component {
         tail.retractProgressFromEnd = cutRatio;
         tail.retractRefundPlanet = toPlanet;
         tail.retractRefundCost = toRefund;
+        // 异阵营目标（敌方/中立）：断开连接应削弱目标，而非为其中补充人口
+        tail.retractRefundDamage = (toPlanet.faction !== conn.faction);
         ConnectionView.create(this.connectionLayer!, tail);
         this.connections.push(tail);
 
@@ -857,6 +902,36 @@ export class GameManager extends Component {
         }
     }
 
+    /**
+     * 断开连接末端段缩回时对目标星球结算资源：
+     * - 异阵营（retractRefundDamage=true，即攻击敌方/中立）：作为伤害扣减目标人口；
+     *   若扣减至 0 则占领该星球，并将未结算的剩余资源作为新驻军人口。
+     * - 友军增援：正常返还人口。
+     */
+    private applyTailRefund(conn: ConnectionData, planet: PlanetData, amount: number) {
+        if (conn.retractRefundDamage) {
+            const original = planet.population;
+            planet.population -= amount;
+            if (planet.population <= 0) {
+                // 占领：本段剩余未结算资源成为新驻军（先按标准流程翻转波/连接，再覆盖人口）
+                const totalRemaining = conn.retractRefundCost; // 尚未扣减，含本次 amount 与后续帧
+                const leftover = Math.max(1, totalRemaining - original);
+                this.capturePlanet(planet, conn.faction);
+                planet.population = leftover;
+                planet.overflowPool = 0;
+                planet.view?.setPopulation(leftover);
+                this.refreshPop(planet);
+                conn.retractRefundCost = 0;
+            } else {
+                conn.retractRefundCost -= amount;
+            }
+        } else {
+            planet.population += amount;
+            conn.retractRefundCost -= amount;
+        }
+        this.refreshPop(planet);
+    }
+
     /** 缩回推进；返回 true 表示缩回完成 */
     private updateRetracting(conn: ConnectionData, dt: number): boolean {
         if (conn.retractFromEnd) {
@@ -867,9 +942,7 @@ export class GameManager extends Component {
                 conn.retractProgressFromEnd = 1;
                 const refundPlanet = conn.retractRefundPlanet;
                 if (refundPlanet && conn.retractRefundCost > 0) {
-                    refundPlanet.population += conn.retractRefundCost;
-                    conn.retractRefundCost = 0;
-                    this.refreshPop(refundPlanet);
+                    this.applyTailRefund(conn, refundPlanet, conn.retractRefundCost);
                 }
                 return true;
             }
@@ -878,9 +951,7 @@ export class GameManager extends Component {
                 const retractedRatio = (conn.retractProgressFromEnd - startProgress) / (1 - startProgress);
                 const refundAmount = conn.retractRefundCost * retractedRatio;
                 if (refundAmount > 0.01) {
-                    refundPlanet.population += refundAmount;
-                    conn.retractRefundCost -= refundAmount;
-                    this.refreshPop(refundPlanet);
+                    this.applyTailRefund(conn, refundPlanet, refundAmount);
                 }
             }
             return false;

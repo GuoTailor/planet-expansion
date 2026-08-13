@@ -26,6 +26,11 @@ export class ConnectionData {
     /** 缩回时返还资源的目标星球与待返还量 */
     retractRefundPlanet: PlanetData | null = null;
     retractRefundCost: number = 0;
+    /**
+     * 末端段缩回时，资源是否作为伤害作用于目标星球（而非返还）。
+     * true 表示目标为异阵营（敌方/中立），断开连接应削弱目标，而非为其补充人口。
+     */
+    retractRefundDamage: boolean = false;
     /** 碰撞对峙：与敌对势力反向连接碰撞，各自只占一半 */
     collided: boolean = false;
     collidedProgress: number = 0.5;
