@@ -14,12 +14,17 @@ export interface TouchDelegate {
     createConnection(from: PlanetData, to: PlanetData): void;
     cutConnection(conn: ConnectionData, cutPos: Vec2): void;
     reportStatus(text: string): void;
+    /** 连接路线（from → tx,ty）是否被墙阻挡 */
+    isPathBlocked(from: PlanetData, tx: number, ty: number): boolean;
     /** 设置滑动切割的悬停高亮连接 id（-1 清除） */
     setCutHighlight(connId: number): void;
+    /** 将屏幕逻辑坐标转换为大地图世界坐标（考虑相机偏移） */
+    screenToWorld(screenX: number, screenY: number, out: Vec2): Vec2;
 }
 
 // ===================== 触摸控制器 =====================
 // 职责：把原始触摸事件翻译成"拖拽建连接 / 滑动切连接"两种手势。
+// 大地图视角移动仅通过小地图拖拽完成，避免滑动切割被误判为拖动地图。
 // 优化点：
 //  - 按 touchId 追踪单个触点，忽略多余手指；
 //  - 引入 TOUCH_SLOP 位移阈值区分点按与滑动，避免误触切割；
@@ -36,6 +41,9 @@ export class TouchController {
     private startPos = new Vec2();
     private prevPos = new Vec2();
     private curPos = new Vec2();
+    // 世界坐标（屏幕坐标 + 相机偏移），用于绘制与切割检测
+    private prevWorldPos = new Vec2();
+    private curWorldPos = new Vec2();
     private scratch = new Vec2();
     private scratchV3 = new Vec3();
     private highlightConnId = -1;
@@ -78,6 +86,8 @@ export class TouchController {
         this.activeTouchId = event.getID();
         this.toLocal(event, this.startPos);
         this.prevPos.set(this.startPos);
+        // 同步世界坐标（用于在 connectionLayer 世界坐标系中绘制）
+        this.delegate.screenToWorld(this.startPos.x, this.startPos.y, this.prevWorldPos);
 
         const planet = this.delegate.pickPlanet(this.startPos);
         if (planet && planet.faction === Faction.PLAYER) {
@@ -91,9 +101,12 @@ export class TouchController {
     private onTouchMove(event: EventTouch) {
         if (!this.enabled || event.getID() !== this.activeTouchId) return;
         this.toLocal(event, this.curPos);
+        // 同步世界坐标
+        this.delegate.screenToWorld(this.curPos.x, this.curPos.y, this.curWorldPos);
 
         if (this.dragFrom) {
-            this.renderDragPreview(this.dragFrom, this.curPos);
+            // 正在拖拽建连接
+            this.renderDragPreview(this.dragFrom, this.curWorldPos);
             return;
         }
 
@@ -102,11 +115,14 @@ export class TouchController {
             if (Vec2.distance(this.startPos, this.curPos) < TUNING.TOUCH_SLOP) return;
             this.swiping = true;
             this.prevPos.set(this.startPos);
+            // prevWorldPos 在 onTouchStart 中已设为 startPos 的世界坐标，保持不变
         }
 
+        // 滑动切割模式（使用世界坐标）
         this.renderSwipeTrail();
         this.checkSwipeCut();
         this.prevPos.set(this.curPos);
+        this.prevWorldPos.set(this.curWorldPos);
     }
 
     private onTouchEnd(event: EventTouch) {
@@ -130,38 +146,67 @@ export class TouchController {
         if (this.dragLineGraphics) this.dragLineGraphics.clear();
     }
 
-    // ==================== 拖拽预览 ====================
-    private renderDragPreview(from: PlanetData, pos: Vec2) {
+    // ==================== 拖拽预览（pos 为世界坐标） ====================
+    private renderDragPreview(from: PlanetData, worldPos: Vec2) {
         const g = this.dragLineGraphics;
         if (!g) return;
         g.clear();
 
-        const dist = Vec2.distance(from.pos, pos);
+        const dist = Vec2.distance(from.pos, worldPos);
         const cost = dist * TUNING.CONNECTION_COST_PER_UNIT;
 
+        // 悬停目标星球；据此判断路线是否被墙阻挡（用世界坐标判断）
+        const hoverX = worldPos.x;
+        const hoverY = worldPos.y;
+        const blocked = this.delegate.isPathBlocked(from, hoverX, hoverY);
+
+        let color = _dragOkColor;
         if (from.population <= 1) {
-            g.strokeColor = colorWithAlpha(_scratchColor, _dragBadColor, 120);
+            color = _dragBadColor;          // 文明为零，无法建立
+        } else if (blocked) {
+            color = _dragBlockedColor;      // 路线被墙阻挡
+        } else if (from.population > cost + 2) {
+            color = _dragOkColor;           // 可负担
         } else {
-            g.strokeColor = from.population > cost + 2
-                ? colorWithAlpha(_scratchColor, _dragOkColor, 180)
-                : colorWithAlpha(_scratchColor, _dragWarnColor, 180);
+            color = _dragWarnColor;         // 文明不足（可建但可能中断）
         }
+        g.strokeColor = colorWithAlpha(_scratchColor, color, 180);
         g.lineWidth = 3;
         g.moveTo(from.pos.x, from.pos.y);
-        g.lineTo(pos.x, pos.y);
+        g.lineTo(worldPos.x, worldPos.y);
         g.stroke();
 
+        if (blocked) {
+            this.delegate.reportStatus('墙阻挡了路线，无法建立连接！');
+        }
+
         // 悬停目标星球高亮圈
-        const hover = this.delegate.pickPlanet(pos);
-        if (hover && hover.id !== from.id) {
-            g.strokeColor = colorWithAlpha(_scratchColor, Color.WHITE, 180);
+        // 用世界坐标查找最近星球
+        let nearestPlanet: PlanetData | null = null;
+        let nearestDist = Infinity;
+        for (const p of this.delegate.getPlanets()) {
+            const dx = hoverX - p.pos.x;
+            const dy = hoverY - p.pos.y;
+            const d = dx * dx + dy * dy;
+            if (d < nearestDist) {
+                nearestDist = d;
+                nearestPlanet = p;
+            }
+        }
+        if (nearestPlanet && nearestPlanet.id !== from.id
+            && nearestDist <= (nearestPlanet.radius + 30) * (nearestPlanet.radius + 30)) {
+            const blockedHover = this.delegate.isPathBlocked(from, nearestPlanet.pos.x, nearestPlanet.pos.y);
+            g.strokeColor = colorWithAlpha(_scratchColor, blockedHover ? _dragBlockedColor : Color.WHITE, 180);
             g.lineWidth = 2;
-            g.circle(hover.pos.x, hover.pos.y, hover.radius + 10);
+            g.circle(nearestPlanet.pos.x, nearestPlanet.pos.y, nearestPlanet.radius + 10);
             g.stroke();
+            if (blockedHover) {
+                this.delegate.reportStatus('墙阻挡了路线，无法建立连接！');
+            }
         }
     }
 
-    // ==================== 滑动轨迹 ====================
+    // ==================== 滑动轨迹（使用世界坐标） ====================
     private renderSwipeTrail() {
         const g = this.dragLineGraphics;
         if (!g) return;
@@ -169,12 +214,12 @@ export class TouchController {
 
         g.strokeColor = colorWithAlpha(_scratchColor, _swipeColor, 200);
         g.lineWidth = 3;
-        g.moveTo(this.prevPos.x, this.prevPos.y);
-        g.lineTo(this.curPos.x, this.curPos.y);
+        g.moveTo(this.prevWorldPos.x, this.prevWorldPos.y);
+        g.lineTo(this.curWorldPos.x, this.curWorldPos.y);
         g.stroke();
 
-        const midX = (this.prevPos.x + this.curPos.x) / 2;
-        const midY = (this.prevPos.y + this.curPos.y) / 2;
+        const midX = (this.prevWorldPos.x + this.curWorldPos.x) / 2;
+        const midY = (this.prevWorldPos.y + this.curWorldPos.y) / 2;
         for (let i = 0; i < 3; i++) {
             g.fillColor = colorWithAlpha(_scratchColor, _sparkColor, 160);
             g.circle(midX + (Math.random() - 0.5) * 12, midY + (Math.random() - 0.5) * 12, 1.5);
@@ -182,7 +227,7 @@ export class TouchController {
         }
     }
 
-    // ==================== 滑动切割检测 ====================
+    // ==================== 滑动切割检测（使用世界坐标） ====================
     private checkSwipeCut() {
         const cutDistSq = TUNING.SWIPE_CUT_DISTANCE * TUNING.SWIPE_CUT_DISTANCE;
         const previewDistSq = cutDistSq * 2.5; // 高亮预览范围稍大
@@ -196,14 +241,14 @@ export class TouchController {
             if (!conn.active || conn.retracting) continue;
             if (conn.faction !== Faction.PLAYER) continue;
 
-            // 只检测已建造的可见段
+            // 只检测已建造的可见段（世界坐标）
             const fx = conn.fromPlanet.pos.x;
             const fy = conn.fromPlanet.pos.y;
             const ex = fx + (conn.toPlanet.pos.x - fx) * conn.progress;
             const ey = fy + (conn.toPlanet.pos.y - fy) * conn.progress;
 
             const distSq = segmentToSegmentDistSq(
-                this.prevPos.x, this.prevPos.y, this.curPos.x, this.curPos.y,
+                this.prevWorldPos.x, this.prevWorldPos.y, this.curWorldPos.x, this.curWorldPos.y,
                 fx, fy, ex, ey,
             );
 
@@ -224,12 +269,13 @@ export class TouchController {
             const fx = cutConn.fromPlanet.pos.x;
             const fy = cutConn.fromPlanet.pos.y;
             closestPointOnSegment(
-                this.curPos.x, this.curPos.y,
+                this.curWorldPos.x, this.curWorldPos.y,
                 fx, fy,
                 fx + (cutConn.toPlanet.pos.x - fx) * cutConn.progress,
                 fy + (cutConn.toPlanet.pos.y - fy) * cutConn.progress,
                 this.scratch,
             );
+            // cutPos 为世界坐标，GameManager.breakConnection 内部用世界坐标计算切割比例
             this.delegate.cutConnection(cutConn, this.scratch);
             this.delegate.reportStatus('滑动切割！连接断开');
             this.setHighlight(-1);
@@ -247,5 +293,6 @@ const _scratchColor = new Color();
 const _dragOkColor = new Color(80, 180, 255, 255);
 const _dragWarnColor = new Color(255, 160, 50, 255);
 const _dragBadColor = new Color(255, 50, 50, 255);
+const _dragBlockedColor = new Color(230, 70, 95, 255); // 墙阻挡（偏品红，区别于文明为零的纯红）
 const _swipeColor = new Color(255, 100, 100, 255);
 const _sparkColor = new Color(255, 180, 80, 255);

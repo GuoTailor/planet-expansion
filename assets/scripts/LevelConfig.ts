@@ -1,4 +1,5 @@
 import { director } from 'cc';
+import { WallConfig } from './game/Wall';
 
 // ===================== 派别枚举 =====================
 // 0/1/3/4 为玩家阵营，2 为中立（与服务器 game/constants.go 一致）。
@@ -41,6 +42,8 @@ export interface LevelData {
     sendRatio?: number;
     /** 难度 1-5，默认 1 */
     difficulty?: number;
+    /** 墙：连接路线若穿过墙则无法建立（归一化坐标，与星球一致） */
+    walls?: WallConfig[];
 }
 
 /** 关卡列表变化事件（动态注册关卡后触发，菜单据此刷新） */
@@ -95,6 +98,9 @@ const BUILTIN_LEVELS: LevelData[] = [
             { nx: -0.4444, ny: 0.5, faction: Faction.ENEMY, population: 25, maxPopulation: 50 },
             { nx: 0.2222, ny: 0.6719, faction: Faction.ENEMY, population: 20, maxPopulation: 40 },
         ],
+        walls: [
+            { nx1: -0.05, ny1: -0.12, nx2: 0.34, ny2: 0.18 },
+        ],
     },
     {
         id: 2,
@@ -128,6 +134,10 @@ const BUILTIN_LEVELS: LevelData[] = [
             { nx: -0.2778, ny: 0.4375, faction: Faction.ENEMY, population: 32, maxPopulation: 55 },
             { nx: 0.1389, ny: 0.625, faction: Faction.ENEMY, population: 28, maxPopulation: 48 },
             { nx: 0.4444, ny: 0.625, faction: Faction.ENEMY, population: 25, maxPopulation: 42 },
+        ],
+        walls: [
+            { nx1: -0.1, ny1: -0.08, nx2: 0.2, ny2: 0.12 },
+            { nx1: 0.28, ny1: -0.05, nx2: 0.54, ny2: 0.14 },
         ],
     },
     {
@@ -168,6 +178,112 @@ const BUILTIN_LEVELS: LevelData[] = [
             { nx: -0.5, ny: 0.5938, faction: Faction.ENEMY, population: 35, maxPopulation: 60 },
             { nx: 0.5, ny: 0.5938, faction: Faction.ENEMY, population: 32, maxPopulation: 55 },
             { nx: 0, ny: 0.75, faction: Faction.ENEMY, population: 38, maxPopulation: 65 },
+        ],
+        walls: [
+            { nx1: -0.22, ny1: 0.0, nx2: 0.22, ny2: 0.22 },
+            { nx1: 0.28, ny1: -0.08, nx2: 0.52, ny2: 0.12 },
+        ],
+    },
+    {
+        id: 6,
+        name: '浩瀚星域',
+        description: '超大规模星际战场，25 颗星球等你征服',
+        difficulty: 5,
+        planets: [
+            { nx: -0.6, ny: -0.85, faction: Faction.PLAYER, population: 30, maxPopulation: 60 },
+            { nx: 0, ny: -0.85, faction: Faction.PLAYER, population: 28, maxPopulation: 55 },
+            { nx: 0.6, ny: -0.85, faction: Faction.PLAYER, population: 30, maxPopulation: 60 },
+            { nx: -0.25, ny: -0.6, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: 0.25, ny: -0.6, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: 0, ny: -0.55, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: -0.7, ny: -0.35, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.4, ny: -0.3, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.4, ny: -0.3, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.7, ny: -0.35, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.2, ny: -0.1, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: 0.2, ny: -0.1, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: 0, ny: -0.15, faction: Faction.NEUTRAL, population: 16, maxPopulation: 32 },
+            { nx: 0, ny: 0.1, faction: Faction.NEUTRAL, population: 16, maxPopulation: 32 },
+            { nx: -0.2, ny: 0.1, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: 0.2, ny: 0.1, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: -0.7, ny: 0.35, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.4, ny: 0.3, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.4, ny: 0.3, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.7, ny: 0.35, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.25, ny: 0.6, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.25, ny: 0.6, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: -0.6, ny: 0.85, faction: Faction.ENEMY, population: 30, maxPopulation: 60 },
+            { nx: 0, ny: 0.85, faction: Faction.ENEMY, population: 35, maxPopulation: 65 },
+            { nx: 0.6, ny: 0.85, faction: Faction.ENEMY, population: 30, maxPopulation: 60 },
+        ],
+    },
+    {
+        id: 7,
+        name: '无尽星海',
+        description: '49 颗星球的浩瀚战场，墙垣分割星域，考验你的谋略',
+        difficulty: 5,
+        planets: [
+            // 第 1 行（最下，ny=-0.84）
+            { nx: -0.78, ny: -0.84, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.52, ny: -0.84, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.26, ny: -0.84, faction: Faction.PLAYER, population: 28, maxPopulation: 55 },
+            { nx: 0, ny: -0.84, faction: Faction.PLAYER, population: 30, maxPopulation: 60 },
+            { nx: 0.26, ny: -0.84, faction: Faction.PLAYER, population: 28, maxPopulation: 55 },
+            { nx: 0.52, ny: -0.84, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.78, ny: -0.84, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            // 第 2 行（ny=-0.56）
+            { nx: -0.78, ny: -0.56, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.52, ny: -0.56, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: -0.26, ny: -0.56, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0, ny: -0.56, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.26, ny: -0.56, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.52, ny: -0.56, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.78, ny: -0.56, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            // 第 3 行（ny=-0.28）
+            { nx: -0.78, ny: -0.28, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: -0.52, ny: -0.28, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.26, ny: -0.28, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0, ny: -0.28, faction: Faction.NEUTRAL, population: 16, maxPopulation: 30 },
+            { nx: 0.26, ny: -0.28, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.52, ny: -0.28, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.78, ny: -0.28, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            // 第 4 行（中央，ny=0）
+            { nx: -0.78, ny: 0, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: -0.52, ny: 0, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.26, ny: 0, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0, ny: 0, faction: Faction.NEUTRAL, population: 18, maxPopulation: 34 },
+            { nx: 0.26, ny: 0, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.52, ny: 0, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.78, ny: 0, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            // 第 5 行（ny=0.28）
+            { nx: -0.78, ny: 0.28, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            { nx: -0.52, ny: 0.28, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.26, ny: 0.28, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0, ny: 0.28, faction: Faction.NEUTRAL, population: 16, maxPopulation: 30 },
+            { nx: 0.26, ny: 0.28, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.52, ny: 0.28, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.78, ny: 0.28, faction: Faction.NEUTRAL, population: 10, maxPopulation: 22 },
+            // 第 6 行（ny=0.56）
+            { nx: -0.78, ny: 0.56, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.52, ny: 0.56, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: -0.26, ny: 0.56, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0, ny: 0.56, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.26, ny: 0.56, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.52, ny: 0.56, faction: Faction.NEUTRAL, population: 14, maxPopulation: 28 },
+            { nx: 0.78, ny: 0.56, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            // 第 7 行（最上，ny=0.84）
+            { nx: -0.78, ny: 0.84, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.52, ny: 0.84, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: -0.26, ny: 0.84, faction: Faction.ENEMY, population: 30, maxPopulation: 60 },
+            { nx: 0, ny: 0.84, faction: Faction.ENEMY, population: 35, maxPopulation: 65 },
+            { nx: 0.26, ny: 0.84, faction: Faction.ENEMY, population: 30, maxPopulation: 60 },
+            { nx: 0.52, ny: 0.84, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+            { nx: 0.78, ny: 0.84, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },
+        ],
+        walls: [
+            { nx1: -0.6, ny1: -0.14, nx2: 0.6, ny2: -0.14 },
+            { nx1: -0.6, ny1: 0.14, nx2: 0.6, ny2: 0.14 },
+            { nx1: -0.78, ny1: -0.1, nx2: -0.55, ny2: 0.12 },
         ],
     },
 ];

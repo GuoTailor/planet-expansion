@@ -60,3 +60,9 @@ type AttackWave struct {
 	CollidedTargetY   float64
 	CollidedConnID    int
 }
+
+// Wall 墙数据（逻辑坐标，对应客户端 WallData）。连接路线线段若穿过墙（含厚度）则不允许建立。
+type Wall struct {
+	X1, Y1 float64
+	X2, Y2 float64
+}

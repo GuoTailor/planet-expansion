@@ -29,6 +29,8 @@ import { ConnectionData, ConnectionView } from './game/Connection';
 import { PlanetData, PlanetView } from './game/Planet';
 import { ResultPanel } from './game/ResultPanel';
 import { TouchController } from './game/TouchController';
+import { WallData, WallView } from './game/Wall';
+import { Minimap } from './game/Minimap';
 import { NetClient } from './network/NetClient';
 import { OnlineController } from './network/OnlineController';
 import {
@@ -67,6 +69,8 @@ export class GameManager extends Component {
     private planets: PlanetData[] = [];
     private connections: ConnectionData[] = [];
     private attackWaves: AttackWave[] = [];
+    /** 墙（逻辑坐标）：连接路线穿过墙则无法建立 */
+    private walls: WallData[] = [];
     private nextPlanetId = 0;
     private nextConnectionId = 0;
     private gameOver = false;
@@ -90,7 +94,10 @@ export class GameManager extends Component {
     // ==================== 层级与子系统 ====================
     private canvasUITransform: UITransform | null = null;
     private gameLayer: Node | null = null;
+    private gameWorld: Node | null = null;  // 大地图世界容器（可移动）
     private connectionLayer: Node | null = null;
+    private wallLayer: Node | null = null;
+    private wallGfx: Graphics | null = null;
     private attackLayer: Node | null = null;
     private uiLayer: Node | null = null;
     private bgNode: Node | null = null;
@@ -99,10 +106,21 @@ export class GameManager extends Component {
     private starfield: Starfield | null = null;
     private resultPanel: ResultPanel | null = null;
     private touch: TouchController | null = null;
+    private minimap: Minimap | null = null;  // 小地图
     private readonly ai = new AIController();
+
+    // ==================== 大地图相机系统 ====================
+    /** 视口中心 X（世界坐标） */
+    private cameraX = 0;
+    /** 视口中心 Y（世界坐标） */
+    private cameraY = 0;
+    /** 世界边界 */
+    private worldBounds = { left: -HALF_EXTENT_X, right: HALF_EXTENT_X, top: HALF_EXTENT_Y, bottom: -HALF_EXTENT_Y };
     private readonly aiDelegate = {
         getPlanets: () => this.planets,
         getConnections: () => this.connections,
+        isPathBlocked: (from: PlanetData, to: PlanetData) =>
+            this.pathBlockedByWall(from.pos.x, from.pos.y, to.pos.x, to.pos.y),
         createConnection: (from: PlanetData, to: PlanetData) => this.tryCreateConnection(from, to, true),
         breakConnection: (conn: ConnectionData) => this.breakConnection(conn),
     };
@@ -144,14 +162,22 @@ export class GameManager extends Component {
         this.bgNode = createUINode('Background', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
         this.starfield = new Starfield(this.bgNode.addComponent(Graphics), DESIGN_WIDTH, DESIGN_HEIGHT, 120);
 
+        // 大地图世界容器（所有游戏元素放在这个容器中，通过移动容器实现视角移动）
+        const worldSize = Math.max(DESIGN_WIDTH, DESIGN_HEIGHT) * TUNING.WORLD_SCALE;
+        this.gameWorld = createUINode('GameWorld', worldSize, worldSize, canvas);
+
         // 连接层（连接线 + 拖拽预览线，由 TouchController 管理预览）
-        this.connectionLayer = createUINode('ConnectionLayer', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+        this.connectionLayer = createUINode('ConnectionLayer', worldSize, worldSize, this.gameWorld);
+
+        // 墙层（静态障碍物，绘制在连接之上、星球之下，强化"路线被阻断"的视觉）
+        this.wallLayer = createUINode('WallLayer', worldSize, worldSize, this.gameWorld);
+        this.wallGfx = this.wallLayer.addComponent(Graphics);
 
         // 游戏层（星球）
-        this.gameLayer = createUINode('GameLayer', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+        this.gameLayer = createUINode('GameLayer', worldSize, worldSize, this.gameWorld);
 
         // 攻击波层
-        this.attackLayer = createUINode('AttackLayer', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
+        this.attackLayer = createUINode('AttackLayer', worldSize, worldSize, this.gameWorld);
 
         // UI 层
         this.uiLayer = createUINode('UILayer', DESIGN_WIDTH, DESIGN_HEIGHT, canvas);
@@ -159,6 +185,16 @@ export class GameManager extends Component {
         this.levelLabel.node.setPosition(0, DESIGN_HEIGHT / 2 - 30, 0);
         this.statusLabel = createLabel(this.uiLayer, 'StatusLabel', '', 16, new Color(220, 220, 255, 180), 800, 40);
         this.statusLabel.node.setPosition(0, DESIGN_HEIGHT / 2 - 60, 0);
+
+        // 小地图（在 UI 层之上）
+        this.minimap = new Minimap(canvas);
+        this.minimap.setViewport({
+            get centerX() { return this._mgr?.cameraX ?? 0; },
+            get centerY() { return this._mgr?.cameraY ?? 0; },
+            setCenter(x: number, y: number) { this._mgr?.setCameraCenter(x, y); },
+            _mgr: null as unknown as GameManager,
+        });
+        (this.minimap.viewport as any)._mgr = this;
 
         // 结算面板
         this.resultPanel = new ResultPanel(canvas, this, {
@@ -214,12 +250,14 @@ export class GameManager extends Component {
         if (this.levelLabel) this.levelLabel.string = `第 ${levelData.id} 关 - ${levelData.name}`;
         this.setStatus(levelData.description!);
 
+        // 创建星球（使用缩小后的半径 + 放大后的世界坐标）
         for (const cfg of levelData.planets) {
             const data = new PlanetData();
             data.id = this.nextPlanetId++;
-            // 归一化坐标 → 竖屏逻辑坐标
-            data.pos.set(cfg.nx * HALF_EXTENT_X, cfg.ny * HALF_EXTENT_Y);
-            data.radius = 22 + cfg.maxPopulation * 0.35;
+            // 归一化坐标 → 大地图世界坐标（乘以 WORLD_SCALE 使世界大于屏幕）
+            data.pos.set(cfg.nx * HALF_EXTENT_X * TUNING.WORLD_SCALE, cfg.ny * HALF_EXTENT_Y * TUNING.WORLD_SCALE);
+            // 星球半径缩小以适应大地图模式
+            data.radius = (22 + cfg.maxPopulation * 0.35) * TUNING.PLANET_SCALE_FACTOR;
             data.faction = cfg.faction;
             data.population = cfg.population;
             data.maxPopulation = cfg.maxPopulation;
@@ -227,6 +265,11 @@ export class GameManager extends Component {
             PlanetView.create(this.gameLayer!, data);
             this.planets.push(data);
         }
+
+        // 计算世界边界并设置相机初始位置
+        this.updateWorldBounds();
+
+        this.buildWalls(levelData);
 
         this.gameStartTime = this.totalTime;
         this.isGameActive = true;
@@ -243,6 +286,8 @@ export class GameManager extends Component {
         this.planets = [];
         this.connections = [];
         this.attackWaves = [];
+        this.walls = [];
+        this.wallGfx?.clear();
         this.nextPlanetId = 0;
         this.nextConnectionId = 0;
         this.gameOver = false;
@@ -253,6 +298,89 @@ export class GameManager extends Component {
         this.resultPanel?.hide();
         this.onlineCtl?.reset();
         this.onlineCtl = null;
+
+        // 重置相机位置
+        this.cameraX = 0;
+        this.cameraY = 0;
+    }
+
+    // ==================== 大地图相机系统 ====================
+    /** 根据星球位置计算世界边界 */
+    private updateWorldBounds() {
+        if (this.planets.length === 0) return;
+
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+
+        for (const p of this.planets) {
+            const r = p.radius + 80; // 边距
+            minX = Math.min(minX, p.pos.x - r);
+            maxX = Math.max(maxX, p.pos.x + r);
+            minY = Math.min(minY, p.pos.y - r);
+            maxY = Math.max(maxY, p.pos.y + r);
+        }
+
+        this.worldBounds.left = minX;
+        this.worldBounds.right = maxX;
+        this.worldBounds.bottom = minY;
+        this.worldBounds.top = maxY;
+
+        // 更新小地图的世界边界
+        if (this.minimap) {
+            this.minimap.updateWorldBounds(this.planets);
+        }
+
+        // 初始相机聚焦玩家星球（取所有玩家星球的质心）
+        let cx = 0, cy = 0, count = 0;
+        for (const p of this.planets) {
+            if (p.faction === Faction.PLAYER) {
+                cx += p.pos.x;
+                cy += p.pos.y;
+                count++;
+            }
+        }
+        if (count > 0) {
+            this.cameraX = cx / count;
+            this.cameraY = cy / count;
+        } else {
+            // 无玩家星球时居中
+            this.cameraX = (minX + maxX) / 2;
+            this.cameraY = (minY + maxY) / 2;
+        }
+        this.clampCamera();
+        this.applyCameraTransform();
+    }
+
+    /** 设置相机中心（由小地图拖拽调用） */
+    setCameraCenter(x: number, y: number) {
+        this.cameraX = x;
+        this.cameraY = y;
+        this.clampCamera();
+        this.applyCameraTransform();
+    }
+
+    /** 限制相机在世界边界内 */
+    private clampCamera() {
+        const halfW = DESIGN_WIDTH / 2;
+        const halfH = DESIGN_HEIGHT / 2;
+
+        this.cameraX = Math.max(this.worldBounds.left + halfW, Math.min(this.worldBounds.right - halfW, this.cameraX));
+        this.cameraY = Math.max(this.worldBounds.bottom + halfH, Math.min(this.worldBounds.top - halfH, this.cameraY));
+    }
+
+    /** 应用相机变换到游戏世界容器 */
+    private applyCameraTransform() {
+        if (this.gameWorld) {
+            this.gameWorld.setPosition(-this.cameraX, -this.cameraY, 0);
+        }
+    }
+
+    /** 平移相机（用于拖拽） */
+    moveCamera(dx: number, dy: number) {
+        this.cameraX += dx;
+        this.cameraY += dy;
+        this.clampCamera();
+        this.applyCameraTransform();
     }
 
     // ==================== 触摸/AI 委托 ====================
@@ -261,6 +389,8 @@ export class GameManager extends Component {
             pickPlanet: (pos: Vec2) => this.pickPlanet(pos),
             getPlanets: () => this.planets,
             getConnections: () => this.connections,
+            isPathBlocked: (from: PlanetData, tx: number, ty: number) =>
+                this.pathBlockedByWall(from.pos.x, from.pos.y, tx, ty),
             createConnection: (from: PlanetData, to: PlanetData) => {
                 if (this.onlineMode) NetClient.instance.sendDrag(from.id, to.id);
                 else this.tryCreateConnection(from, to, false);
@@ -271,17 +401,46 @@ export class GameManager extends Component {
             },
             reportStatus: (text: string) => this.setStatus(text),
             setCutHighlight: (connId: number) => { this.cutHighlightId = connId; },
+            screenToWorld: (sx: number, sy: number, out: Vec2) => {
+                out.set(sx + this.cameraX, sy + this.cameraY);
+                return out;
+            },
         };
     }
 
-    private pickPlanet(pos: Vec2): PlanetData | null {
+    private pickPlanet(screenPos: Vec2): PlanetData | null {
+        // 将屏幕坐标转换为世界坐标（考虑相机偏移）
+        const worldX = screenPos.x + this.cameraX;
+        const worldY = screenPos.y + this.cameraY;
+
         for (const planet of this.planets) {
-            const dx = pos.x - planet.pos.x;
-            const dy = pos.y - planet.pos.y;
-            const r = planet.radius + 8;
+            const dx = worldX - planet.pos.x;
+            const dy = worldY - planet.pos.y;
+            const r = planet.radius + 12; // 稍微增加触摸范围
             if (dx * dx + dy * dy <= r * r) return planet;
         }
         return null;
+    }
+
+    // ==================== 墙 ====================
+    /** 依据关卡数据构建墙（归一化坐标 → 逻辑坐标）并绘制 */
+    private buildWalls(levelData: LevelData) {
+        this.walls = [];
+        if (!this.wallGfx) return;
+        for (const cfg of levelData.walls ?? []) {
+            this.walls.push(WallData.fromConfig(cfg));
+        }
+        WallView.drawAll(this.wallGfx, this.walls);
+    }
+
+    /** 连接路线（from→to）是否被任意墙阻挡（含墙厚度） */
+    private pathBlockedByWall(fx: number, fy: number, tx: number, ty: number): boolean {
+        for (const w of this.walls) {
+            if (w.blocks(fx, fy, tx, ty)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ==================== 尝试创建连接 ====================
@@ -292,6 +451,12 @@ export class GameManager extends Component {
         const existing = this.connections.find(c => c.fromPlanet === from && c.toPlanet === to && c.active);
         if (existing) {
             if (!silent) this.setStatus('连接已存在！');
+            return;
+        }
+
+        // 路线被墙阻挡：连接线段穿过墙（含厚度）则不允许建立
+        if (this.pathBlockedByWall(from.pos.x, from.pos.y, to.pos.x, to.pos.y)) {
+            if (!silent) this.setStatus('墙阻挡了路线，无法建立连接！');
             return;
         }
 
@@ -515,6 +680,11 @@ export class GameManager extends Component {
             PlanetView.create(this.gameLayer!, data);
         }
 
+        this.buildWalls(msg.level);
+
+        // 计算世界边界并设置相机初始位置（聚焦玩家星球）
+        this.updateWorldBounds();
+
         const opponents = msg.players
             .filter(p => p.faction !== msg.yourFaction)
             .map(p => `${p.nickname}${p.isAI ? '(AI)' : ''}`)
@@ -590,6 +760,11 @@ export class GameManager extends Component {
 
         this.totalTime += dt;
         this.starfield?.render(this.totalTime);
+
+        // 渲染小地图
+        if (this.minimap && this.planets.length > 0) {
+            this.minimap.render(this.planets, this.totalTime);
+        }
 
         if (this.gameOver) return;
 
@@ -939,6 +1114,7 @@ export class GameManager extends Component {
     private setGameLayerVisible(visible: boolean) {
         if (this.bgNode) this.bgNode.active = visible;
         if (this.connectionLayer) this.connectionLayer.active = visible;
+        if (this.wallLayer) this.wallLayer.active = visible;
         if (this.gameLayer) this.gameLayer.active = visible;
         if (this.attackLayer) this.attackLayer.active = visible;
         if (this.uiLayer) this.uiLayer.active = visible;

@@ -10,6 +10,14 @@ const (
 	HalfExtentY = DesignHeight/2 - 120 // 520
 )
 
+// ==================== 大地图模式参数 ====================
+const (
+	// 大地图缩放比例（世界大小相对于屏幕的倍数）
+	WorldScale = 2.0
+	// 星球半径缩小系数
+	PlanetScaleFactor = 0.65
+)
+
 // ===================== 阵营 =====================
 // 0/1/3/4 为玩家阵营，2 为中立（与客户端 Faction 枚举一致：PLAYER=0, ENEMY=1, NEUTRAL=2, P3=3, P4=4）。
 const FactionNeutral = 2
@@ -20,8 +28,8 @@ var FFAFactions = []int{0, 1, 3, 4}
 
 // ===================== 全局调参（TUNING） =====================
 const (
-	// 连接费用 = 距离 × 该系数
-	ConnectionCostPerUnit = 0.1
+	// 连接费用 = 距离 × 该系数（已按 WorldScale 折算，保持大地图下费用平衡）
+	ConnectionCostPerUnit = 0.05
 	// 人口增长间隔（秒）
 	GrowInterval = 0.5
 	// 攻击伤害倍率
@@ -36,4 +44,6 @@ const (
 	CollisionPoint = 0.5
 	// 连接默认建造速度（progress/秒，对应客户端 ConnectionData.speed 默认值 0.4）
 	ConnectionSpeed = 0.4
+	// 墙厚度（逻辑像素）；连接路线距墙芯小于半个厚度即视为被阻挡
+	WallThickness = 14.0
 )

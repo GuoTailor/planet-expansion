@@ -45,8 +45,8 @@ export const FACTION_NAMES: Record<number, string> = {
 
 // ===================== 全局调参 =====================
 export const TUNING = {
-    /** 连接费用 = 距离 × 该系数 */
-    CONNECTION_COST_PER_UNIT: 0.1,
+    /** 连接费用 = 距离 × 该系数（已按 WORLD_SCALE 折算，保持大地图下费用平衡） */
+    CONNECTION_COST_PER_UNIT: 0.05,
     /** 人口增长间隔（秒） */
     GROW_INTERVAL: 0.5,
     /** 攻击伤害倍率 */
@@ -61,6 +61,16 @@ export const TUNING = {
     COLLISION_POINT: 0.5,
     /** 区分"点按"与"滑动"的移动阈值 */
     TOUCH_SLOP: 12,
+    /** 墙厚度（逻辑像素）；连接路线距墙芯小于半个厚度即视为被阻挡 */
+    WALL_THICKNESS: 14,
+
+    // ==================== 大地图模式参数 ====================
+    /** 大地图缩放比例（世界大小相对于屏幕的倍数，2.0 表示世界是屏幕的2倍大） */
+    WORLD_SCALE: 2.0,
+    /** 星球半径缩小系数（大地图模式下星球更小以容纳更多信息） */
+    PLANET_SCALE_FACTOR: 0.65,
+    /** 地图拖拽阻尼（0-1，越小越滑畅） */
+    MAP_DRAG_DAMPING: 0.85,
 } as const;
 
 /** 将 base 颜色以指定透明度写入 out（避免每帧 new Color 分配） */

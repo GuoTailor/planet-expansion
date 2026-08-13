@@ -55,8 +55,9 @@ export class OnlineController {
         msg.level.planets.forEach((cfg, i) => {
             const data = new PlanetData();
             data.id = i;
-            data.pos.set(cfg.nx * HALF_EXTENT_X, cfg.ny * HALF_EXTENT_Y);
-            data.radius = 22 + cfg.maxPopulation * 0.35;
+            // 归一化坐标 → 大地图世界坐标（与单机模式同步缩放）
+            data.pos.set(cfg.nx * HALF_EXTENT_X * TUNING.WORLD_SCALE, cfg.ny * HALF_EXTENT_Y * TUNING.WORLD_SCALE);
+            data.radius = (22 + cfg.maxPopulation * 0.35) * TUNING.PLANET_SCALE_FACTOR;
             data.faction = this.toLocalFaction(cfg.faction);
             data.population = cfg.population;
             data.maxPopulation = cfg.maxPopulation;

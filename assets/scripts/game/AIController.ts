@@ -8,6 +8,7 @@ import { PlanetData } from './Planet';
 export interface AIDelegate {
     getPlanets(): PlanetData[];
     getConnections(): ConnectionData[];
+    isPathBlocked(from: PlanetData, to: PlanetData): boolean;
     createConnection(from: PlanetData, to: PlanetData): void;
     breakConnection(conn: ConnectionData): void;
 }
@@ -46,6 +47,9 @@ export class AIController {
                     c => c.active && c.fromPlanet === ep && c.toPlanet === tp,
                 );
                 if (exists) continue;
+
+                // 路线被墙阻挡：放弃该目标，避免浪费决策
+                if (delegate.isPathBlocked(ep, tp)) continue;
 
                 const dist = Vec2.distance(ep.pos, tp.pos);
                 const cost = dist * TUNING.CONNECTION_COST_PER_UNIT;

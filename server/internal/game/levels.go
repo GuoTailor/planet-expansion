@@ -14,6 +14,15 @@ type PlanetConfig struct {
 	GrowRate      float64 `json:"growRate,omitempty"` // 缺省时中立 0.8 / 阵营 1.5
 }
 
+// WallConfig 墙配置，坐标为归一化竖屏坐标 nx/ny ∈ [-1,1]（与星球一致）。
+// 连接路线（线段）若穿过墙则不允许建立。
+type WallConfig struct {
+	NX1 float64 `json:"nx1"`
+	NY1 float64 `json:"ny1"`
+	NX2 float64 `json:"nx2"`
+	NY2 float64 `json:"ny2"`
+}
+
 // LevelData 关卡配置（服务器下发时已完成默认值填充）。
 type LevelData struct {
 	ID             int            `json:"id"`
@@ -24,6 +33,7 @@ type LevelData struct {
 	AttackInterval float64        `json:"attackInterval"`
 	SendRatio      float64        `json:"sendRatio"`
 	Planets        []PlanetConfig `json:"planets"`
+	Walls          []WallConfig   `json:"walls,omitempty"`
 }
 
 func fillDefaults(l LevelData) *LevelData {
@@ -79,6 +89,9 @@ func init() {
 				{NX: -0.4444, NY: 0.5, Faction: 1, Population: 25, MaxPopulation: 50},
 				{NX: 0.2222, NY: 0.6719, Faction: 1, Population: 20, MaxPopulation: 40},
 			},
+			Walls: []WallConfig{
+				{NX1: -0.05, NY1: -0.12, NX2: 0.34, NY2: 0.18},
+			},
 		},
 		{
 			ID: 2, Name: "星云冲突", Description: "更强大的敌人在星云中等待你", Difficulty: 2,
@@ -106,6 +119,10 @@ func init() {
 				{NX: -0.2778, NY: 0.4375, Faction: 1, Population: 32, MaxPopulation: 55},
 				{NX: 0.1389, NY: 0.625, Faction: 1, Population: 28, MaxPopulation: 48},
 				{NX: 0.4444, NY: 0.625, Faction: 1, Population: 25, MaxPopulation: 42},
+			},
+			Walls: []WallConfig{
+				{NX1: -0.1, NY1: -0.08, NX2: 0.2, NY2: 0.12},
+				{NX1: 0.28, NY1: -0.05, NX2: 0.54, NY2: 0.14},
 			},
 		},
 		{
@@ -140,6 +157,99 @@ func init() {
 				{NX: -0.5, NY: 0.5938, Faction: 1, Population: 35, MaxPopulation: 60},
 				{NX: 0.5, NY: 0.5938, Faction: 1, Population: 32, MaxPopulation: 55},
 				{NX: 0, NY: 0.75, Faction: 1, Population: 38, MaxPopulation: 65},
+			},
+			Walls: []WallConfig{
+				{NX1: -0.22, NY1: 0.0, NX2: 0.22, NY2: 0.22},
+				{NX1: 0.28, NY1: -0.08, NX2: 0.52, NY2: 0.12},
+			},
+		},
+		{
+			ID: 6, Name: "浩瀚星域", Description: "超大规模星际战场，25 颗星球等你征服", Difficulty: 5,
+			Planets: []PlanetConfig{
+				{NX: -0.6, NY: -0.85, Faction: 0, Population: 30, MaxPopulation: 60},
+				{NX: 0, NY: -0.85, Faction: 0, Population: 28, MaxPopulation: 55},
+				{NX: 0.6, NY: -0.85, Faction: 0, Population: 30, MaxPopulation: 60},
+				{NX: -0.25, NY: -0.6, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: 0.25, NY: -0.6, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: 0, NY: -0.55, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: -0.7, NY: -0.35, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.4, NY: -0.3, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.4, NY: -0.3, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.7, NY: -0.35, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.2, NY: -0.1, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: 0.2, NY: -0.1, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: 0, NY: -0.15, Faction: FactionNeutral, Population: 16, MaxPopulation: 32},
+				{NX: 0, NY: 0.1, Faction: FactionNeutral, Population: 16, MaxPopulation: 32},
+				{NX: -0.2, NY: 0.1, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: 0.2, NY: 0.1, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: -0.7, NY: 0.35, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.4, NY: 0.3, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.4, NY: 0.3, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.7, NY: 0.35, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.25, NY: 0.6, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0.25, NY: 0.6, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: -0.6, NY: 0.85, Faction: 1, Population: 30, MaxPopulation: 60},
+				{NX: 0, NY: 0.85, Faction: 1, Population: 35, MaxPopulation: 65},
+				{NX: 0.6, NY: 0.85, Faction: 1, Population: 30, MaxPopulation: 60},
+			},
+		},
+		{
+			ID: 7, Name: "无尽星海", Description: "49 颗星球的浩瀚战场，墙垣分割星域，考验你的谋略", Difficulty: 5,
+			Planets: []PlanetConfig{
+				{NX: -0.78, NY: -0.84, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.52, NY: -0.84, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.26, NY: -0.84, Faction: 0, Population: 28, MaxPopulation: 55},
+				{NX: 0, NY: -0.84, Faction: 0, Population: 30, MaxPopulation: 60},
+				{NX: 0.26, NY: -0.84, Faction: 0, Population: 28, MaxPopulation: 55},
+				{NX: 0.52, NY: -0.84, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.78, NY: -0.84, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.78, NY: -0.56, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.52, NY: -0.56, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: -0.26, NY: -0.56, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0, NY: -0.56, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0.26, NY: -0.56, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.52, NY: -0.56, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0.78, NY: -0.56, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.78, NY: -0.28, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: -0.52, NY: -0.28, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.26, NY: -0.28, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0, NY: -0.28, Faction: FactionNeutral, Population: 16, MaxPopulation: 30},
+				{NX: 0.26, NY: -0.28, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0.52, NY: -0.28, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.78, NY: -0.28, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: -0.78, NY: 0, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: -0.52, NY: 0, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.26, NY: 0, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0, NY: 0, Faction: FactionNeutral, Population: 18, MaxPopulation: 34},
+				{NX: 0.26, NY: 0, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0.52, NY: 0, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.78, NY: 0, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: -0.78, NY: 0.28, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: -0.52, NY: 0.28, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.26, NY: 0.28, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0, NY: 0.28, Faction: FactionNeutral, Population: 16, MaxPopulation: 30},
+				{NX: 0.26, NY: 0.28, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0.52, NY: 0.28, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.78, NY: 0.28, Faction: FactionNeutral, Population: 10, MaxPopulation: 22},
+				{NX: -0.78, NY: 0.56, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.52, NY: 0.56, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: -0.26, NY: 0.56, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0, NY: 0.56, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0.26, NY: 0.56, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.52, NY: 0.56, Faction: FactionNeutral, Population: 14, MaxPopulation: 28},
+				{NX: 0.78, NY: 0.56, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.78, NY: 0.84, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.52, NY: 0.84, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: -0.26, NY: 0.84, Faction: 1, Population: 30, MaxPopulation: 60},
+				{NX: 0, NY: 0.84, Faction: 1, Population: 35, MaxPopulation: 65},
+				{NX: 0.26, NY: 0.84, Faction: 1, Population: 30, MaxPopulation: 60},
+				{NX: 0.52, NY: 0.84, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+				{NX: 0.78, NY: 0.84, Faction: FactionNeutral, Population: 12, MaxPopulation: 25},
+			},
+			Walls: []WallConfig{
+				{NX1: -0.6, NY1: -0.14, NX2: 0.6, NY2: -0.14},
+				{NX1: -0.6, NY1: 0.14, NX2: 0.6, NY2: 0.14},
+				{NX1: -0.78, NY1: -0.1, NX2: -0.55, NY2: 0.12},
 			},
 		},
 	}

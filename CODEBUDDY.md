@@ -4,12 +4,10 @@
 
 这是**星际征途 (PLANETARY CONQUEST)**，一款基于 **Cocos Creator 3.8.8** 和 TypeScript 构建的2D星际策略游戏，**仅面向微信小程序的竖屏设备**。玩家在星球间拖拽创建连接，连接会自动发送攻击波，与 AI 或真人对手竞争。项目使用单场景、无外部素材——所有视觉均通过 `Graphics` 组件程序化绘制；菜单与结算按钮的点击由 Cocos 原生 `Button` 组件接管（命中检测由引擎按 `UITransform` 自动路由，无手写坐标映射）。
 
-**双模式**：游戏同时支持**单机闯关**（5 关 vs AI，纯客户端）与**在线对战**（Go 权威服务器 + WebSocket，1v1 或 4 人 FFA；匹配超时由服务器 AI 补位）。两种模式共享同一套渲染/触摸/关卡数据代码。
+**双模式**：游戏同时支持**单机闯关**（纯客户端）与**在线对战**（Go 权威服务器 + WebSocket，1v1 或 4 人 FFA；匹配超时由服务器 AI 补位）。两种模式共享同一套渲染/触摸/关卡数据代码。
 
 ## 构建与运行
 
-- **TypeScript 编译**：由 Cocos Creator 构建流程自动处理。`tsconfig.json` 继承 `./temp/tsconfig.cocos.json`，设置 `strict: false`。
-- 本项目没有 npm 脚本、测试运行器或 lint 配置。
 - **Go 服务器**：见 `server/` 目录。本地联调 `cd server && go run ./cmd/server`（DSN 为空时退化为内存存储，无需 MySQL）；生产部署见下节。
 
 ## 文件结构（各司其职）
@@ -30,8 +28,9 @@ assets/scripts/
 │  ├─ Planet.ts        PlanetData + PlanetView（星球绘制、人口标签）
 │  ├─ Connection.ts    ConnectionData + ConnectionView（连接线/箭头/对峙光效绘制）
 │  ├─ AttackWave.ts    AttackWave + AttackWaveView（攻击波绘制、兵力标签）
-│  ├─ TouchController.ts 触摸手势：拖拽建连接 / 滑动切连接（含预览与高亮）
+│  ├─ TouchController.ts 触摸手势：拖拽建连接 / 滑动切连接（含预览与高亮、墙阻挡反馈）
 │  ├─ AIController.ts  单机 AI 决策（在线对局由服务器 AI 接管，此处不动）
+│  ├─ Wall.ts          WallConfig + WallData（墙线段、blocks() 阻挡判定）+ WallView（整局绘制一次）
 │  └─ ResultPanel.ts   结算面板（单机胜/负 + 在线名次/人机局提示）
 └─ network/            ★ 在线对战客户端网络层
    ├─ Protocol.ts      与服务器对应的 JSON 消息类型、NET_EVENTS、SERVER_HTTP_URL（默认 http://127.0.0.1:8080）
@@ -63,8 +62,9 @@ assets/scripts/
 
 1. **Background** — `Starfield` 星空（120 颗闪烁星）
 2. **ConnectionLayer** — 连接线 + 拖拽预览线（预览线由 TouchController 创建，连接节点 `setSiblingIndex(0)` 保持在其下方）
-3. **GameLayer** — 星球节点
-4. **AttackLayer** — 攻击波节点
+3. **WallLayer** — 墙（静态障碍，单个 `Graphics` 整局只绘一次；绘制于连接之上、星球之下，强调"路线被阻断"）
+4. **GameLayer** — 星球节点
+5. **AttackLayer** — 攻击波节点
 5. **UILayer** — 关卡标题、状态文本
 6. **ResultLayer** — `ResultPanel` 结算面板
 
@@ -81,6 +81,7 @@ assets/scripts/
 - `planets: PlanetData[]` — 位置、半径、阵营、人口、增长率、溢出池
 - `connections: ConnectionData[]` — 有向连接，含建造进度、费用追踪和碰撞状态
 - `attackWaves: AttackWave[]` — 沿连接移动的投射物
+- `walls: WallData[]` — 墙（逻辑坐标线段）；连接路线若穿过墙则无法建立
 - `onlineMode: boolean` / `onlineCtl: OnlineController | null` / `onlineMatchMode: MatchMode` — 在线对战状态
 
 星球半径公式：`radius = 22 + maxPopulation * 0.35`
@@ -89,7 +90,7 @@ assets/scripts/
 
 连接是有方向的（A→B）。关键生命周期：
 
-1. **创建**：玩家从己方星球拖拽至目标星球。费用 = `距离 * TUNING.CONNECTION_COST_PER_UNIT (0.1)`。同方向重复连接被阻止。
+1. **创建**：玩家从己方星球拖拽至目标星球。费用 = `距离 * TUNING.CONNECTION_COST_PER_UNIT (0.1)`。同方向重复连接被阻止；路线被墙（`WallData.blocks()`，含 `TUNING.WALL_THICKNESS`(14) 厚度）阻挡时也不允许建立（返回"墙阻挡了路线，无法建立连接！"）。
 2. **建造**：`progress` 从 0 增长到 1，动态从 `fromPlanet` 扣除人口。人口耗尽则连接缩回。
 3. **到达**：`progress=1` 时，连接按关卡 `attackInterval` 间隔发送攻击波。
 4. **同阵营反向**：若 A→B 已存在，同阵营再建 B→A 时，原连接缩回（资源返还）。

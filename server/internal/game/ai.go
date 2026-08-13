@@ -60,6 +60,11 @@ func (ai *AIController) Update(dt float64, e *Engine) {
 				continue
 			}
 
+			// 路线被墙阻挡：放弃该目标，避免浪费决策
+			if e.pathBlockedByWall(ep, tp) {
+				continue
+			}
+
 			dx := ep.X - tp.X
 			dy := ep.Y - tp.Y
 			dist := math.Sqrt(dx*dx + dy*dy)

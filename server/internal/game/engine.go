@@ -15,6 +15,7 @@ type Engine struct {
 	Planets     []*Planet
 	Connections []*Connection
 	Waves       []*AttackWave
+	Walls       []Wall // 墙（逻辑坐标）；连接路线穿过墙则无法建立
 
 	attackInterval float64
 	sendRatio      float64
@@ -51,9 +52,9 @@ func NewEngine(level *LevelData) *Engine {
 	for i, cfg := range level.Planets {
 		p := &Planet{
 			ID:            i,
-			X:             cfg.NX * HalfExtentX,
-			Y:             cfg.NY * HalfExtentY,
-			Radius:        22 + cfg.MaxPopulation*0.35,
+			X:             cfg.NX * HalfExtentX * WorldScale,
+			Y:             cfg.NY * HalfExtentY * WorldScale,
+			Radius:        (22 + cfg.MaxPopulation*0.35) * PlanetScaleFactor,
 			Faction:       cfg.Faction,
 			Population:    cfg.Population,
 			MaxPopulation: cfg.MaxPopulation,
@@ -70,6 +71,17 @@ func NewEngine(level *LevelData) *Engine {
 		if p.Faction != FactionNeutral {
 			e.aliveFactions[p.Faction] = true
 		}
+	}
+
+	// 构建墙（归一化坐标 → 大地图世界坐标）
+	e.Walls = make([]Wall, 0, len(level.Walls))
+	for _, w := range level.Walls {
+		e.Walls = append(e.Walls, Wall{
+			X1: w.NX1 * HalfExtentX * WorldScale,
+			Y1: w.NY1 * HalfExtentY * WorldScale,
+			X2: w.NX2 * HalfExtentX * WorldScale,
+			Y2: w.NY2 * HalfExtentY * WorldScale,
+		})
 	}
 	return e
 }
@@ -92,6 +104,18 @@ func (e *Engine) ConnectionByID(id int) *Connection {
 	return nil
 }
 
+// pathBlockedByWall 判断连接路线（from→to）是否被任意墙阻挡（含墙厚度）
+func (e *Engine) pathBlockedByWall(from, to *Planet) bool {
+	half := WallThickness / 2
+	rSq := half * half
+	for _, w := range e.Walls {
+		if SegmentToSegmentDistSq(from.X, from.Y, to.X, to.Y, w.X1, w.Y1, w.X2, w.Y2) <= rSq {
+			return true
+		}
+	}
+	return false
+}
+
 // ===================== 尝试创建连接（tryCreateConnection） =====================
 func (e *Engine) TryCreateConnection(from, to *Planet, silent bool) {
 	dx := from.X - to.X
@@ -104,6 +128,12 @@ func (e *Engine) TryCreateConnection(from, to *Planet, silent bool) {
 			e.actionEvent(from.Faction, silent, "连接已存在！")
 			return
 		}
+	}
+
+	// 路线被墙阻挡：连接线段穿过墙（含厚度）则不允许建立
+	if e.pathBlockedByWall(from, to) {
+		e.actionEvent(from.Faction, silent, "墙阻挡了路线，无法建立连接！")
+		return
 	}
 
 	// 同阵营反向连接：缩回原连接并返还资源
