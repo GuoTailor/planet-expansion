@@ -59,7 +59,13 @@ type participant struct {
 	placement      int
 	ratingChange   int
 	disconnectedAt time.Time
-	ai             *game.AIController
+	ai             aiAgent
+}
+
+// aiAgent 是 AI 决策的抽象：基础 AI 与激进 AI 都满足该接口，由关卡 AIType 选择启用。
+type aiAgent interface {
+	Update(dt float64, e *game.Engine)
+	Reset()
 }
 
 // ===================== 外部事件 =====================
@@ -183,13 +189,19 @@ func (m *Manager) CreateRoom(mode string, humans []HumanEntry) *Room {
 	// AI 补齐空位
 	for j := len(humans); j < size; j++ {
 		faction := factions[perm[j]]
+		var aiCtl aiAgent
+		if level.AIType == "aggressive" {
+			aiCtl = game.NewAggressiveAIController(faction, level.AIInterval, roomRng)
+		} else {
+			aiCtl = game.NewAIController(faction, level.AIInterval, roomRng)
+		}
 		p := &participant{
 			nickname:  aiNickname(j),
 			rating:    1000,
 			faction:   faction,
 			isAI:      true,
 			connected: true,
-			ai:        game.NewAIController(faction, level.AIInterval, roomRng),
+			ai:        aiCtl,
 		}
 		r.participants = append(r.participants, p)
 		r.byFaction[p.faction] = p

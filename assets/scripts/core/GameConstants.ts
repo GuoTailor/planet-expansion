@@ -48,7 +48,7 @@ export const TUNING = {
     /** 连接费用 = 距离 × 该系数（已按 WORLD_SCALE 折算，保持大地图下费用平衡） */
     CONNECTION_COST_PER_UNIT: 0.05,
     /** 人口增长间隔（秒） */
-    GROW_INTERVAL: 0.5,
+    GROW_INTERVAL: 3,
     /** 攻击伤害倍率 */
     ATTACK_DAMAGE_RATIO: 1.0,
     /** 滑动切割判定距离（逻辑像素） */
@@ -75,6 +75,24 @@ export const TUNING = {
     PLANET_SCALE_FACTOR: 0.65,
     /** 地图拖拽阻尼（0-1，越小越滑畅） */
     MAP_DRAG_DAMPING: 0.85,
+
+    // ==================== 激进 AI（AggressiveAIController）调参 ====================
+    /** 决策时跳过概率（更低 = 更主动出击） */
+    AI_AGGRESSIVE_SKIP_PROB: 0.25,
+    /** 冗余连接清理概率 */
+    AI_AGGRESSIVE_CLEANUP_PROB: 0.6,
+    /** 友方星球人口低于 maxPopulation*该比例视为"过少"需要增援 */
+    AI_SUPPORT_LOW_RATIO: 0.3,
+    /** 友方星球人口低于该绝对值也视为"过少" */
+    AI_SUPPORT_ABS_MIN: 8,
+    /** 增援源星球人口至少达到该值才适合派出 */
+    AI_SUPPORT_SOURCE_MIN: 12,
+    /** 被攻击且人口低于此值视为脆弱（触发防守缩回） */
+    AI_DEFENSE_MIN_POP: 10,
+    /** 占领风险评估缓冲：敌方来袭兵力 >= 人口 - 缓冲 视为有风险 */
+    AI_DEFENSE_RISK_BUFFER: 3,
+    /** "根部断开即可占领"的兵力缓冲（补偿目标生长与飞行时间） */
+    AI_CAPTURE_BUFFER: 3,
 } as const;
 
 /** 将 base 颜色以指定透明度写入 out（避免每帧 new Color 分配） */

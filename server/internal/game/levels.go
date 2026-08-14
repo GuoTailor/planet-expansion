@@ -32,6 +32,7 @@ type LevelData struct {
 	AIInterval     float64        `json:"aiInterval"`
 	AttackInterval float64        `json:"attackInterval"`
 	SendRatio      float64        `json:"sendRatio"`
+	AIType         string         `json:"aiType"` // "normal"（默认）或 "aggressive"
 	Planets        []PlanetConfig `json:"planets"`
 	Walls          []WallConfig   `json:"walls,omitempty"`
 }
@@ -53,6 +54,9 @@ func fillDefaults(l LevelData) *LevelData {
 	}
 	if l.SendRatio == 0 {
 		l.SendRatio = minF(0.35, 0.18+float64(d)*0.02)
+	}
+	if l.AIType == "" {
+		l.AIType = "normal"
 	}
 	return &l
 }
@@ -142,7 +146,7 @@ func init() {
 			},
 		},
 		{
-			ID: 5, Name: "终极对决", Description: "最后的战场，只有最强者才能存活", Difficulty: 5,
+			ID: 5, Name: "终极对决", Description: "最后的战场，只有最强者才能存活", Difficulty: 5, AIType: "aggressive",
 			Planets: []PlanetConfig{
 				{X: 0.00, Y: -731.22, Faction: 0, Population: 28, MaxPopulation: 55},
 				{X: -280.00, Y: -520.00, Faction: 0, Population: 18, MaxPopulation: 35},
@@ -283,7 +287,7 @@ func init() {
 			},
 		},
 		{
-			ID: 102, Name: "星域乱战", Description: "单星球开局，在中立星域中扩张求生", Difficulty: 4,
+			ID: 102, Name: "星域乱战", Description: "单星球开局，在中立星域中扩张求生", Difficulty: 4, AIType: "aggressive",
 			Planets: []PlanetConfig{
 				// 四名玩家各 1 颗母星，分居四角
 				{X: -336.00, Y: -624.00, Faction: 0, Population: 30, MaxPopulation: 60},

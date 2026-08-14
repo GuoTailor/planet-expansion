@@ -25,6 +25,7 @@ import { Starfield } from './core/Starfield';
 import { createLabel, createUINode } from './core/UIHelper';
 import { AttackWave, AttackWaveView } from './game/AttackWave';
 import { AIController } from './game/AIController';
+import { AggressiveAIController } from './game/AggressiveAIController';
 import { ConnectionData, ConnectionView } from './game/Connection';
 import { PlanetData, PlanetView } from './game/Planet';
 import { ResultPanel } from './game/ResultPanel';
@@ -107,7 +108,7 @@ export class GameManager extends Component {
     private resultPanel: ResultPanel | null = null;
     private touch: TouchController | null = null;
     private minimap: Minimap | null = null;  // 小地图
-    private readonly ai = new AIController();
+    private ai: AIController | AggressiveAIController = new AIController();
 
     // ==================== 大地图相机系统 ====================
     /** 视口中心 X（世界坐标） */
@@ -124,10 +125,13 @@ export class GameManager extends Component {
     private readonly aiDelegate = {
         getPlanets: () => this.planets,
         getConnections: () => this.connections,
+        getAttackWaves: () => this.attackWaves,
         isPathBlocked: (from: PlanetData, to: PlanetData) =>
             this.pathBlockedByWall(from.pos.x, from.pos.y, to.pos.x, to.pos.y),
         createConnection: (from: PlanetData, to: PlanetData) => this.tryCreateConnection(from, to, true),
         breakConnection: (conn: ConnectionData) => this.breakConnection(conn),
+        retractConnection: (conn: ConnectionData) => this.retractConnection(conn),
+        retractConnectionKeepWaves: (conn: ConnectionData) => this.retractConnectionKeepWaves(conn),
     };
 
     start() {
@@ -255,6 +259,12 @@ export class GameManager extends Component {
 
         this.attackInterval = levelData.attackInterval!;
         this.sendRatio = levelData.sendRatio!;
+        // 按关卡 aiType 选择 AI：'aggressive' 启用更激进的 AI，否则使用基础 AI（共存）
+        if (levelData.aiType === 'aggressive') {
+            this.ai = new AggressiveAIController(Faction.ENEMY);
+        } else {
+            this.ai = new AIController();
+        }
         this.ai.interval = levelData.aiInterval!;
 
         if (this.levelLabel) this.levelLabel.string = `第 ${levelData.id} 关 - ${levelData.name}`;
@@ -592,6 +602,18 @@ export class GameManager extends Component {
         conn.retractRefundCost = 0;
         this.releaseCollisionPair(conn);
         this.removeAttackWavesForConnection(conn);
+    }
+
+    /** 缩回连接但保留已发出的攻击波（激进 AI「根部断开占领」用：停止出兵并返还资源，空中波继续飞向目标） */
+    private retractConnectionKeepWaves(conn: ConnectionData) {
+        if (!conn.active || conn.retracting) return;
+        conn.retracting = true;
+        conn.retractFromEnd = false;
+        conn.retractProgressFromEnd = 0;
+        conn.retractRefundPlanet = null;
+        conn.retractRefundCost = 0;
+        this.releaseCollisionPair(conn);
+        // 注意：不调用 removeAttackWavesForConnection，保留已发出的攻击波使其继续飞向目标
     }
 
     /** 清除该连接已发出但未到达的攻击波 */
@@ -1039,32 +1061,27 @@ export class GameManager extends Component {
             const fromPlanet = conn.fromPlanet;
             if (fromPlanet.faction !== conn.faction) continue;
 
-            // 可用人口 = 星球人口 + 溢出池（满人口后的盈余）；二者近乎为空时不发送
-            const avail = fromPlanet.population + fromPlanet.overflowPool;
-            if (avail <= 1) {
+            // 与原版一致：发送攻击波不扣除源星球基础人口（仅溢出池作为盈余被运出）。
+            // 仅当星球人口足够或存在溢出池时才发送（对应原版 totalSend > 0 的判断）。
+            if (fromPlanet.population < 3 && fromPlanet.overflowPool <= 0) {
                 conn.sendAccum = 0;
                 continue;
             }
 
-            // 发送速率与可用人口成正比：人口越多，攻击波发得越快；每次仅发 1 个人口，
-            // 累加器每满 1 即发一波，使各连接发送间隔尽量均匀。
+            // 发送速率与星球可用人口（人口 + 溢出池）成正比：人口越多，攻击波发得越快；
+            // 每次仅发 1 个人口，累加器每满 1 即发一波，使各连接发送间隔尽量均匀。
+            const avail = fromPlanet.population + fromPlanet.overflowPool;
             const rate = this.waveBaseRate * avail; // 每秒攻击波数
             conn.sendAccum += dt * rate;
             if (conn.sendAccum > TUNING.WAVE_MAX_ACCUM) conn.sendAccum = TUNING.WAVE_MAX_ACCUM;
 
             while (conn.sendAccum >= 1) {
-                // 优先从星球人口扣除（保留至少 1 作为防御），不足再从溢出池扣
-                if (fromPlanet.population > 1) {
-                    fromPlanet.population -= 1;
-                } else if (fromPlanet.overflowPool >= 1) {
-                    fromPlanet.overflowPool -= 1;
-                } else {
-                    conn.sendAccum = 0;
-                    break;
-                }
                 conn.sendAccum -= 1;
+                // 溢出池优先作为攻击波人口运出（不扣减星球基础人口）
+                if (fromPlanet.overflowPool >= 1) {
+                    fromPlanet.overflowPool -= 1;
+                }
                 this.createAndSendWave(conn, TUNING.WAVE_POP_PER_SEND);
-                this.refreshPop(fromPlanet);
             }
         }
     }

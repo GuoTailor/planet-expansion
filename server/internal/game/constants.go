@@ -31,7 +31,7 @@ const (
 	// 连接费用 = 距离 × 该系数（已按 WorldScale 折算，保持大地图下费用平衡）
 	ConnectionCostPerUnit = 0.05
 	// 人口增长间隔（秒）
-	GrowInterval = 0.5
+	GrowInterval = 3
 	// 攻击伤害倍率
 	AttackDamageRatio = 1.0
 	// 滑动切割判定距离（逻辑像素）
@@ -50,4 +50,22 @@ const (
 	WavePopPerSend = 1.0
 	// 攻击波发送累加器上限，防止长时间卡顿后爆发式补发
 	WaveMaxAccum = 2.0
+
+	// ==================== 激进 AI（AggressiveAIController）调参 ====================
+	// 决策时跳过概率（更低 = 更主动出击）
+	AIAggressiveSkipProb = 0.25
+	// 冗余连接清理概率
+	AIAggressiveCleanupProb = 0.6
+	// 友方星球人口低于 maxPopulation*该比例视为"过少"需要增援
+	AISupportLowRatio = 0.3
+	// 友方星球人口低于该绝对值也视为"过少"
+	AISupportAbsMin = 8.0
+	// 增援源星球人口至少达到该值才适合派出
+	AISupportSourceMin = 12.0
+	// 被攻击且人口低于此值视为脆弱（触发防守缩回）
+	AIDefenseMinPop = 10.0
+	// 占领风险评估缓冲：敌方来袭兵力 >= 人口 - 缓冲 视为有风险
+	AIDefenseRiskBuffer = 3.0
+	// "根部断开即可占领"的兵力缓冲（补偿目标生长与飞行时间）
+	AICaptureBuffer = 3.0
 )

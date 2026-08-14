@@ -44,6 +44,8 @@ export interface LevelData {
     difficulty?: number;
     /** 墙：连接路线若穿过墙则无法建立（大地图世界绝对坐标，与星球一致） */
     walls?: WallConfig[];
+    /** AI 类型：'normal' 基础 AI（默认） / 'aggressive' 激进 AI；由关卡选择哪种 AI 接管 */
+    aiType?: 'normal' | 'aggressive';
 }
 
 /** 关卡列表变化事件（动态注册关卡后触发，菜单据此刷新） */
@@ -62,6 +64,7 @@ function fillDefaults(level: LevelData): LevelData {
         aiInterval: Math.max(2.0, 5.5 - difficulty * 0.5),
         attackInterval: Math.max(0.8, 1.5 - difficulty * 0.1),
         sendRatio: Math.min(0.35, 0.18 + difficulty * 0.02),
+        aiType: 'normal' as const,
         ...level,
     };
 }
@@ -164,6 +167,7 @@ const BUILTIN_LEVELS: LevelData[] = [
         name: '终极对决',
         description: '最后的战场，只有最强者才能存活',
         difficulty: 5,
+        aiType: 'aggressive',
         planets: [
             { x: 0.00, y: -731.22, faction: Faction.PLAYER, population: 28, maxPopulation: 55 },
             { x: -280.00, y: -520.00, faction: Faction.PLAYER, population: 18, maxPopulation: 35 },
@@ -222,6 +226,7 @@ const BUILTIN_LEVELS: LevelData[] = [
         name: '无尽星海',
         description: '49 颗星球的浩瀚战场，墙垣分割星域，考验你的谋略',
         difficulty: 5,
+        aiType: 'aggressive',
         planets: [
             // 第 1 行（最下，ny=-0.84）
             { x: -436.80, y: -873.60, faction: Faction.NEUTRAL, population: 12, maxPopulation: 25 },

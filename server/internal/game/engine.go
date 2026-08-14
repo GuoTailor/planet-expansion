@@ -250,6 +250,21 @@ func (e *Engine) retractConnection(conn *Connection) {
 	e.removeAttackWavesForConnection(conn)
 }
 
+// RetractConnectionKeepWaves 缩回连接但保留已发出的攻击波（激进 AI「根部断开占领」用）：
+// 停止继续出兵并返还资源，已发出的空中波继续飞向目标。仅该方法（而非 retractConnection）不清除空中波。
+func (e *Engine) RetractConnectionKeepWaves(conn *Connection) {
+	if !conn.Active || conn.Retracting {
+		return
+	}
+	conn.Retracting = true
+	conn.RetractFromEnd = false
+	conn.RetractProgressFromEnd = 0
+	conn.RetractRefundPlanet = nil
+	conn.RetractRefundCost = 0
+	e.releaseCollisionPair(conn)
+	// 注意：不调用 removeAttackWavesForConnection，保留已发出的攻击波使其继续飞向目标
+}
+
 // removeAttackWavesForConnection 清除该连接已发出但未到达的攻击波
 func (e *Engine) removeAttackWavesForConnection(conn *Connection) {
 	for _, wave := range e.Waves {
@@ -607,15 +622,16 @@ func (e *Engine) emitAttackWaves(dt float64) {
 			continue
 		}
 
-		// 可用人口 = 星球人口 + 溢出池（满人口后的盈余）；二者近乎为空时不发送
-		avail := fromPlanet.Population + fromPlanet.OverflowPool
-		if avail <= 1 {
+		// 与原版一致：发送攻击波不扣除源星球基础人口（仅溢出池作为盈余被运出）。
+		// 仅当星球人口足够或存在溢出池时才发送（对应原版 totalSend > 0 的判断）。
+		if fromPlanet.Population < 3 && fromPlanet.OverflowPool <= 0 {
 			conn.SendAccum = 0
 			continue
 		}
 
-		// 发送速率与可用人口成正比：人口越多，攻击波发得越快；每次仅发 1 个人口，
-		// 累加器每满 1 即发一波，使各连接发送间隔尽量均匀。
+		// 发送速率与星球可用人口（人口 + 溢出池）成正比：人口越多，攻击波发得越快；
+		// 每次仅发 1 个人口，累加器每满 1 即发一波，使各连接发送间隔尽量均匀。
+		avail := fromPlanet.Population + fromPlanet.OverflowPool
 		rate := e.waveBaseRate * avail // 每秒攻击波数
 		conn.SendAccum += dt * rate
 		if conn.SendAccum > WaveMaxAccum {
@@ -623,16 +639,11 @@ func (e *Engine) emitAttackWaves(dt float64) {
 		}
 
 		for conn.SendAccum >= 1 {
-			// 优先从星球人口扣除（保留至少 1 作为防御），不足再从溢出池扣
-			if fromPlanet.Population > 1 {
-				fromPlanet.Population -= 1
-			} else if fromPlanet.OverflowPool >= 1 {
-				fromPlanet.OverflowPool -= 1
-			} else {
-				conn.SendAccum = 0
-				break
-			}
 			conn.SendAccum -= 1
+			// 溢出池优先作为攻击波人口运出（不扣减星球基础人口）
+			if fromPlanet.OverflowPool >= 1 {
+				fromPlanet.OverflowPool -= 1
+			}
 			e.createAndSendWave(conn, WavePopPerSend)
 		}
 	}
