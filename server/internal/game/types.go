@@ -11,6 +11,8 @@ type Planet struct {
 	Population    float64
 	MaxPopulation float64
 	GrowRate      float64
+	// 每星球独立增长计时器（秒）
+	GrowTimer float64
 	// 超过满人口时的溢出值，发射攻击波时均分带走
 	OverflowPool float64
 }

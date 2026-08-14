@@ -61,7 +61,7 @@ export class OnlineController {
             data.faction = this.toLocalFaction(cfg.faction);
             data.population = cfg.population;
             data.maxPopulation = cfg.maxPopulation;
-            data.growRate = cfg.growRate ?? (cfg.faction === Faction.NEUTRAL ? 0.8 : 1.5);
+            data.growRate = cfg.growRate ?? 1;
             this.planets.push(data);
         });
     }

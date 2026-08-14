@@ -47,13 +47,13 @@ func fillDefaults(l LevelData) *LevelData {
 	}
 	l.Difficulty = d
 	if l.AIInterval == 0 {
-		l.AIInterval = maxF(2.0, 5.5-float64(d)*0.5)
+		l.AIInterval = 2.0
 	}
 	if l.AttackInterval == 0 {
-		l.AttackInterval = maxF(0.8, 1.5-float64(d)*0.1)
+		l.AttackInterval = 1.5
 	}
 	if l.SendRatio == 0 {
-		l.SendRatio = minF(0.35, 0.18+float64(d)*0.02)
+		l.SendRatio = 0.1
 	}
 	if l.AIType == "" {
 		l.AIType = "normal"

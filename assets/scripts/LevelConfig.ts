@@ -34,11 +34,11 @@ export interface LevelData {
     name: string;
     description?: string;
     planets: PlanetConfig[];
-    /** AI 决策间隔（秒），默认随难度递减 */
+    /** AI 决策间隔（秒） */
     aiInterval?: number;
-    /** 攻击波发送间隔（秒），默认随难度递减 */
+    /** 攻击波发送间隔（秒） */
     attackInterval?: number;
-    /** 每次发送人口比例，默认随难度递增 */
+    /** 每次发送人口比例 */
     sendRatio?: number;
     /** 难度 1-5，默认 1 */
     difficulty?: number;
@@ -61,9 +61,9 @@ function fillDefaults(level: LevelData): LevelData {
     return {
         description: '占领所有敌方星球，建立你的星际帝国',
         difficulty,
-        aiInterval: Math.max(2.0, 5.5 - difficulty * 0.5),
-        attackInterval: Math.max(0.8, 1.5 - difficulty * 0.1),
-        sendRatio: Math.min(0.35, 0.18 + difficulty * 0.02),
+        aiInterval: 2.0,
+        attackInterval: 1.5,
+        sendRatio: 0.1,
         aiType: 'normal' as const,
         ...level,
     };

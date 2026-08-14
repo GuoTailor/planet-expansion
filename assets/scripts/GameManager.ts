@@ -78,7 +78,6 @@ export class GameManager extends Component {
     private isGameActive = false;
     private currentLevelData: LevelData | null = null;
 
-    private growTimer = 0;
     private waveBaseRate = 0;
     private totalTime = 0;
     private gameStartTime = 0;
@@ -281,7 +280,7 @@ export class GameManager extends Component {
             data.faction = cfg.faction;
             data.population = cfg.population;
             data.maxPopulation = cfg.maxPopulation;
-            data.growRate = cfg.growRate ?? (cfg.faction === Faction.NEUTRAL ? 0.8 : 1.5);
+            data.growRate = cfg.growRate ?? 1;
             PlanetView.create(this.gameLayer!, data);
             this.planets.push(data);
         }
@@ -312,7 +311,6 @@ export class GameManager extends Component {
         this.nextConnectionId = 0;
         this.gameOver = false;
         this.cutHighlightId = -1;
-        this.growTimer = 0;
         this.waveBaseRate = this.sendRatio / this.attackInterval;
         this.ai.reset();
         this.resultPanel?.hide();
@@ -604,15 +602,20 @@ export class GameManager extends Component {
         this.removeAttackWavesForConnection(conn);
     }
 
-    /** 缩回连接但保留已发出的攻击波（激进 AI「根部断开占领」用：停止出兵并返还资源，空中波继续飞向目标） */
+    /** 缩回连接但保留已发出的攻击波（激进 AI「根部断开占领」用：停止出兵并返还资源，空中波继续飞向目标）
+     * 视觉上与玩家切割一致：以源端为断开点，整条线作为末端段从自己星球向敌方星球缩回，
+     * 已支付资源返还给源星球（自己）而非敌方。 */
     private retractConnectionKeepWaves(conn: ConnectionData) {
         if (!conn.active || conn.retracting) return;
-        conn.retracting = true;
-        conn.retractFromEnd = false;
-        conn.retractProgressFromEnd = 0;
-        conn.retractRefundPlanet = null;
-        conn.retractRefundCost = 0;
         this.releaseCollisionPair(conn);
+        conn.reached = false;
+        conn.retracting = true;
+        conn.retractFromEnd = true;            // 复用玩家切割的末端段缩回方向（源端→敌端）
+        conn.retractProgressFromEnd = 0;
+        conn.progress = 0;                      // 断开点位于源端，保证返还比例计算正确
+        conn.retractRefundPlanet = conn.fromPlanet;
+        conn.retractRefundCost = conn.paidCost; // 回收自身投入的资源
+        conn.retractRefundDamage = false;       // 返还给己方，而非作为伤害作用于敌方
         // 注意：不调用 removeAttackWavesForConnection，保留已发出的攻击波使其继续飞向目标
     }
 
@@ -632,6 +635,9 @@ export class GameManager extends Component {
         if (!conn.active || conn.retracting) return;
 
         this.releaseCollisionPair(conn);
+
+        // 断连后撤销增援效果：清空接收方溢出池（盈余不随连接断开保留）
+        conn.toPlanet.overflowPool = 0;
 
         // 情况1：还在建造中 → 单向缩回到 fromPlanet
         if (!conn.reached) {
@@ -948,7 +954,7 @@ export class GameManager extends Component {
                 conn.retractRefundCost -= amount;
             }
         } else {
-            planet.population += amount;
+            // 断连时不再把连接残留资源白送给接收方（增援效果随断开撤销）
             conn.retractRefundCost -= amount;
         }
         this.refreshPop(planet);
@@ -1121,6 +1127,7 @@ export class GameManager extends Component {
             if (target.population > target.maxPopulation) {
                 target.overflowPool += target.population - target.maxPopulation;
                 target.population = target.maxPopulation;
+                target.overflowPool = Math.min(target.overflowPool, TUNING.OVERFLOW_POOL_MAX);
             }
         } else {
             target.population -= wave.amount * TUNING.ATTACK_DAMAGE_RATIO;
@@ -1134,19 +1141,31 @@ export class GameManager extends Component {
 
     // ==================== 人口增长 ====================
     private updateGrowth(dt: number) {
-        this.growTimer += dt;
-        if (this.growTimer < TUNING.GROW_INTERVAL) return;
-        this.growTimer = 0;
-
         for (const planet of this.planets) {
             if (planet.faction === Faction.NEUTRAL) continue;
+            // 每对外建立一个连接，增长间隔翻倍（基础 GROW_INTERVAL × 2^连接数）
+            planet.growTimer += dt;
+            const interval = TUNING.GROW_INTERVAL * Math.pow(2, this.outgoingConnCount(planet));
+            if (planet.growTimer < interval) continue;
+            planet.growTimer = 0;
+
             planet.population += planet.growRate;
             if (planet.population > planet.maxPopulation) {
                 planet.overflowPool += planet.population - planet.maxPopulation;
                 planet.population = planet.maxPopulation;
+                planet.overflowPool = Math.min(planet.overflowPool, TUNING.OVERFLOW_POOL_MAX);
             }
             this.refreshPop(planet);
         }
+    }
+
+    /** 统计该星球当前存活的对外连接数（连接断开/缩回后自动恢复增长速度） */
+    private outgoingConnCount(planet: PlanetData): number {
+        let count = 0;
+        for (const conn of this.connections) {
+            if (conn.active && !conn.retracting && conn.fromPlanet === planet) count++;
+        }
+        return count;
     }
 
     // ==================== 游戏结束 ====================

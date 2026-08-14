@@ -12,6 +12,8 @@ export class PlanetData {
     population: number = 10;
     maxPopulation: number = 50;
     growRate: number = 1;
+    /** 每星球独立增长计时器（秒） */
+    growTimer: number = 0;
     /** 超过满人口时的溢出值，发射攻击波时均分带走 */
     overflowPool: number = 0;
     view: PlanetView | null = null;

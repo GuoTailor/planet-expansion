@@ -20,7 +20,6 @@ type Engine struct {
 	attackInterval float64
 	sendRatio      float64
 
-	growTimer    float64
 	waveBaseRate float64
 	TotalTime    float64
 
@@ -62,11 +61,7 @@ func NewEngine(level *LevelData) *Engine {
 			GrowRate:      cfg.GrowRate,
 		}
 		if p.GrowRate == 0 {
-			if cfg.Faction == FactionNeutral {
-				p.GrowRate = 0.8
-			} else {
-				p.GrowRate = 1.5
-			}
+			p.GrowRate = 1
 		}
 		e.Planets = append(e.Planets, p)
 		if p.Faction != FactionNeutral {
@@ -252,16 +247,21 @@ func (e *Engine) retractConnection(conn *Connection) {
 
 // RetractConnectionKeepWaves 缩回连接但保留已发出的攻击波（激进 AI「根部断开占领」用）：
 // 停止继续出兵并返还资源，已发出的空中波继续飞向目标。仅该方法（而非 retractConnection）不清除空中波。
+// 视觉上与玩家切割一致：以源端为断开点，整条线作为末端段从自己星球向敌方星球缩回，
+// 已支付资源返还给源星球（自己）而非敌方。
 func (e *Engine) RetractConnectionKeepWaves(conn *Connection) {
 	if !conn.Active || conn.Retracting {
 		return
 	}
-	conn.Retracting = true
-	conn.RetractFromEnd = false
-	conn.RetractProgressFromEnd = 0
-	conn.RetractRefundPlanet = nil
-	conn.RetractRefundCost = 0
 	e.releaseCollisionPair(conn)
+	conn.Reached = false
+	conn.Retracting = true
+	conn.RetractFromEnd = true // 复用玩家切割的末端段缩回方向（源端→敌端）
+	conn.RetractProgressFromEnd = 0
+	conn.Progress = 0                    // 断开点位于源端，保证返还比例计算正确
+	conn.RetractRefundPlanet = conn.From // 回收自身投入的资源，返还给源星球
+	conn.RetractRefundCost = conn.PaidCost
+	conn.RetractRefundDamage = false // 返还给己方，而非作为伤害作用于敌方
 	// 注意：不调用 removeAttackWavesForConnection，保留已发出的攻击波使其继续飞向目标
 }
 
@@ -287,6 +287,9 @@ func (e *Engine) BreakConnection(conn *Connection, cutX, cutY float64, hasCutPos
 	}
 
 	e.releaseCollisionPair(conn)
+
+	// 断连后撤销增援效果：清空接收方溢出池（盈余不随连接断开保留）
+	conn.To.OverflowPool = 0
 
 	// 情况1：还在建造中 → 单向缩回到 From
 	if !conn.Reached {
@@ -517,7 +520,7 @@ func (e *Engine) applyTailRefund(conn *Connection, planet *Planet, amount float6
 			conn.RetractRefundCost -= amount
 		}
 	} else {
-		planet.Population += amount
+		// 断连时不再把连接残留资源白送给接收方（增援效果随断开撤销）
 		conn.RetractRefundCost -= amount
 	}
 }
@@ -688,6 +691,7 @@ func (e *Engine) applyAttack(wave *AttackWave) {
 		if target.Population > target.MaxPopulation {
 			target.OverflowPool += target.Population - target.MaxPopulation
 			target.Population = target.MaxPopulation
+			target.OverflowPool = math.Min(target.OverflowPool, OverflowPoolMax)
 		}
 	} else {
 		target.Population -= wave.Amount * AttackDamageRatio
@@ -700,22 +704,36 @@ func (e *Engine) applyAttack(wave *AttackWave) {
 
 // ===================== 人口增长（updateGrowth） =====================
 func (e *Engine) updateGrowth(dt float64) {
-	e.growTimer += dt
-	if e.growTimer < GrowInterval {
-		return
-	}
-	e.growTimer = 0
-
 	for _, planet := range e.Planets {
 		if planet.Faction == FactionNeutral {
 			continue
 		}
+		// 每对外建立一个连接，增长间隔翻倍（基础 GrowInterval × 2^连接数）
+		planet.GrowTimer += dt
+		interval := GrowInterval * math.Pow(2, float64(e.outgoingConnCount(planet)))
+		if planet.GrowTimer < interval {
+			continue
+		}
+		planet.GrowTimer = 0
+
 		planet.Population += planet.GrowRate
 		if planet.Population > planet.MaxPopulation {
 			planet.OverflowPool += planet.Population - planet.MaxPopulation
 			planet.Population = planet.MaxPopulation
+			planet.OverflowPool = math.Min(planet.OverflowPool, OverflowPoolMax)
 		}
 	}
+}
+
+// outgoingConnCount 统计该星球当前存活的对外连接数（连接断开/缩回后自动恢复增长速度）
+func (e *Engine) outgoingConnCount(planet *Planet) int {
+	count := 0
+	for _, conn := range e.Connections {
+		if conn.Active && !conn.Retracting && conn.From == planet {
+			count++
+		}
+	}
+	return count
 }
 
 // ===================== 淘汰与游戏结束（多阵营泛化版 checkGameOver） =====================

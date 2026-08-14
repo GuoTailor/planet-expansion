@@ -50,6 +50,8 @@ const (
 	WavePopPerSend = 1.0
 	// 攻击波发送累加器上限，防止长时间卡顿后爆发式补发
 	WaveMaxAccum = 2.0
+	// 溢出池上限，星球满人口后溢出的盈余人口最多保留 1 个
+	OverflowPoolMax = 1.0
 
 	// ==================== 激进 AI（AggressiveAIController）调参 ====================
 	// 决策时跳过概率（更低 = 更主动出击）
